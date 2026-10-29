@@ -57,3 +57,26 @@ Les nouveaux champs et tables SQLite sont ajoutés automatiquement au démarrage
 Pour analyser des sites publics, le serveur doit pouvoir résoudre leurs domaines et accéder à HTTP/HTTPS. La vérification HTTPS maintient la validation des certificats. `www.googleapis.com` doit être accessible si `PAGESPEED_API_KEY` est configurée. Sans clé, les audits HTML fonctionnent ; les performances Google restent non mesurées.
 
 Les séquences n’envoient rien : approbations individuelles, déclaration d’envoi manuel et saisie des réponses uniquement tant que le fournisseur email n’est pas connecté. Le système n’active pas de tâche planifiée d’envoi.
+
+## Messagerie contact@omnidigital.fr (Hostinger)
+
+Dans les variables de l’application existante, **ajouter sans effacer les autres valeurs** :
+
+| Variable | Valeur |
+| --- | --- |
+| `MAIL_PROVIDER` | `hostinger` |
+| `MAIL_USER` | `contact@omnidigital.fr` |
+| `MAIL_PASSWORD` | Password de la boîte email, saisie uniquement dans hPanel |
+| `MAIL_FROM_NAME` | `OmniDigital` (facultatif) |
+
+Il s’agit du mot de passe de la boîte, pas celui du CRM ou de la connexion hPanel. Ne jamais transmettre ce secret dans le chat ou GitHub. Les serveurs confirmés sont `smtp.hostinger.com:465` et `imap.hostinger.com:993`, TLS avec vérification des certificats. Aucun changement DNS n’est effectué par le code. Conserver les enregistrements de messagerie existants.
+
+Après enregistrement des variables et redémarrage, ouvrir **Automatisation → Messagerie → Vérifier la connexion sans envoyer**. Ce bouton teste SMTP et IMAP sans transmettre d’email. « Configuration présente » ne garantit pas l’authentification : la vérification doit réussir. Cet environnement de développement ne dispose pas de la password et n’a pas vérifié la connexion réelle de la boîte.
+
+Le serveur relève INBOX toutes les 60 secondes en lecture seule, sans déplacer, marquer comme lus ou supprimer les emails. La première synchronisation initialise un repère au courrier actuel : aucun historique de boîte n’est importé. Seules les nouvelles réponses dont le fil (`In-Reply-To` / `References`) et l’expéditeur correspondent à un message SMTP envoyé par le CRM sont associées à un contact. Une réponse à un ancien envoi manuel sans identifiant connu doit toujours être enregistrée manuellement. Pièces jointes ignorées ; messages de plus de 512 Ko non importés automatiquement ; si l’expéditeur correspond à un destinataire connu, ses relances sont mises en pause pour une vérification manuelle. Relever la boîte à partir d’un seul processus applicatif et sauvegarder SQLite normalement.
+
+Pour envoyer : relire/modifier le texte, enregistrer, **Approuver ce mail**, puis **Envoyer maintenant** et confirmer le destinataire/objet. Les notes et le texte PDF restent dans « Contexte interne » et ne sont pas transmis. Les anciens brouillons qui contiennent encore le bloc « Éléments du dossier à vérifier… » doivent être nettoyés avant envoi.
+
+Avant chaque envoi, une synchronisation IMAP est exigée : une erreur de synchronisation bloque l’envoi, et une réponse/opposition annule les approbations en attente. Aucune tâche planifiée n’envoie de mails. Une réponse peut arriver après la synchronisation, alors qu’un envoi confirmé est déjà en cours : un message déjà transmis au serveur SMTP ne peut pas être rappelé par le CRM.
+
+SMTP ne garantit ni la livraison finale ni un envoi exactement une fois après une coupure. En cas d’erreur ambiguë, le statut devient **À vérifier**, sans tentative automatique. Vérifier auprès du fournisseur puis utiliser la résolution documentée : envoi confirmé, ou non-envoi confirmé avec nouvelle approbation obligatoire. L’acceptation SMTP n’est pas une preuve d’arrivée dans la boîte du destinataire. La connexion SMTP ne garantit pas une copie dans le dossier « Envoyés » ; le CRM conserve son propre historique. Les messages d’erreur de distribution non rattachés automatiquement restent à examiner dans la boîte. Aucune mesure d’ouverture ou de clic n’est activée.

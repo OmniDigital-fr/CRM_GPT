@@ -5,6 +5,7 @@ import {spawn} from 'node:child_process';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {MailService,readMailConfig} from '../mail-service.js';
 import {auditWebsite,publicAddress,resolvePublic,siteUrl,analyzePage,AuditError} from '../site-audit.js';
 import {createApp,openDatabase,validateConfig,importText,extractPdf} from '../crm-server.js';
 
@@ -16,7 +17,8 @@ async function fixture(t,overrides={}) {
   const dir=mkdtempSync(join(tmpdir(),'omni-node-'));
   const db=openDatabase(join(dir,'crm.sqlite3'));
   const config={production:false,user:'',password:'',publicUrl:'',pagespeedKey:'',...overrides.config};
-  const server=createApp({db,config,inspect:async url=>samplePage(url),...overrides}).listen(0,'127.0.0.1');await once(server,'listening');
+  const mailService=overrides.serviceFactory?.(db);
+  const server=createApp({db,config,mailService,inspect:async url=>samplePage(url),...overrides}).listen(0,'127.0.0.1');await once(server,'listening');
   t.after(async()=>{await new Promise(r=>server.close(r));db.close();rmSync(dir,{recursive:true,force:true})});
   const base='http://127.0.0.1:'+server.address().port;
   const request=async(path,data,headers={})=>{
@@ -282,4 +284,134 @@ test('explicit stop overrides permissive classification and never prepares a rep
  const response=await request(`/api/prospects/${id}/reply`,{body:'Merci de ne plus me contacter. Retirez mes coordonnées de votre liste.',scenario:'Réponse positive'});
  assert.equal(response.status,201);assert.equal(response.data.messageId,null);
  const state=(await request('/api/state')).data;assert.equal(state.prospects[0].status,'Opposition');assert.equal(state.messages.filter(m=>m.status==='Brouillon'||m.status==='Approuvé').length,0);
+});
+
+function fakeMailSetup(db,options={}){
+ const inbox=[],sent=[];
+ const transport={verify:async()=>true,sendMail:async message=>{sent.push(message);if(options.fail)throw Error('simulated failure');if(options.wait)await options.wait;return {accepted:[message.envelope.to[0]],messageId:message.messageId}},close(){}};
+ const clientFactory=()=>({
+  mailbox:null,connect:async()=>{},
+  async getMailboxLock(){this.mailbox={uidValidity:1n,uidNext:inbox.length+1};return {release(){}}},
+  async *fetch(range){const [start,end]=range.split(':').map(Number);for(let i=start-1;i<Math.min(end,inbox.length);i++){yield {uid:i+1,envelope:{from:[{address:inbox[i].from}],messageId:inbox[i].messageId},size:Buffer.byteLength(inbox[i].raw)};if(options.failFetchOnce){options.failFetchOnce=false;throw Error('simulated interrupted IMAP batch')}}},
+  async fetchOne(uid){return {source:Buffer.from(inbox[uid-1].raw)}},logout:async()=>{},close(){}
+ });
+ const service=new MailService({db,config:readMailConfig({MAIL_PROVIDER:'hostinger',MAIL_USER:'contact@omnidigital.fr',MAIL_PASSWORD:'test-only-never-real'}),draft:p=>({subject:'Réponse proposée',body:'Merci pour votre demande.',context:p.notes}),transport,clientFactory});
+ return {service,inbox,sent};
+}
+async function approvedMail(request,company='SMTP test'){
+ const p=(await request('/api/prospects',{company,email:'recipient@example.com'})).data;
+ await request(`/api/prospects/${p.id}/draft`,{});
+ let m=(await request('/api/state')).data.messages.find(m=>m.prospect_id===p.id);
+ await request(`/api/messages/${m.id}/update`,{subject:'Texte vérifié',body:'Bonjour, ceci est le texte approuvé par le responsable.'});
+ await request(`/api/messages/${m.id}/approve`,{confirm:m.id});
+ const messageId=m.id;m=(await request('/api/state')).data.messages.find(item=>item.id===messageId);
+ return {p,m};
+}
+test('SMTP requires individual current approval; sends only the frozen recipient and never internal notes',async t=>{
+ let fake;const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db)).service});
+ const {p,m}=await approvedMail(request);
+ assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id})).status,409);assert.equal(fake.sent.length,0);
+ assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at})).status,200);
+ assert.equal(fake.sent.length,1);assert.deepEqual(fake.sent[0].envelope.to,['recipient@example.com']);
+ assert.equal(fake.sent[0].from.address,'contact@omnidigital.fr');assert.equal(fake.sent[0].html,undefined);
+ assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at})).status,409);
+ assert.equal(fake.sent.length,1);
+ const state=(await request('/api/state')).data;assert.equal(state.messages[0].status,'Envoyé');assert.equal(state.metrics.sent,1);
+});
+
+test('concurrent sends claim the message only once',async t=>{
+ let release;const wait=new Promise(r=>release=r);let fake;
+ const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db,{wait})).service});
+ const {m}=await approvedMail(request);
+ const first=request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at});
+ while(!fake.sent.length)await new Promise(r=>setTimeout(r,5));
+ assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at})).status,409);
+ release();assert.equal((await first).status,200);assert.equal(fake.sent.length,1);
+});
+
+test('uncertain SMTP delivery cannot be automatically retried and requires documented resolution',async t=>{
+ let fake;const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db,{fail:true})).service});
+ const {m}=await approvedMail(request);
+ assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at})).status,502);
+ assert.equal((await request('/api/state')).data.messages[0].status,'À vérifier');
+ assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at})).status,409);
+ assert.equal(fake.sent.length,1);
+ assert.equal((await request(`/api/messages/${m.id}/resolve-delivery`,{confirm:m.id,outcome:'not-sent',evidence:'Vérification manuelle du journal fournisseur : refus avant livraison.'})).status,200);
+ assert.equal((await request('/api/state')).data.messages[0].status,'Brouillon');
+});
+
+test('IMAP imports matching replies once, ignores quoted opt-out footer and pauses outreach',async t=>{
+ let fake;const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db)).service});
+ const {p,m}=await approvedMail(request);
+ await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at});
+ const original=fake.sent[0].messageId;
+ fake.inbox.push({from:'recipient@example.com',messageId:'<reply-one@example.com>',raw:`From: recipient@example.com\r\nTo: contact@omnidigital.fr\r\nMessage-ID: <reply-one@example.com>\r\nIn-Reply-To: ${original}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nBonjour, pouvez-vous préciser vos tarifs ?\r\n\r\nLe jeudi 29 octobre, OmniDigital a écrit :\r\n> Répondez stop pour ne plus être contacté.`});
+ assert.equal((await request('/api/mail/sync',{})).data.imported,1);
+ const state=(await request('/api/state')).data;assert.equal(state.replies.length,1);assert.equal(state.prospects[0].response_scenario,'Demande de devis / tarifs');assert.notEqual(state.prospects[0].status,'Opposition');assert.equal(state.metrics.replied,1);
+ assert.equal((await request('/api/mail/sync',{})).data.imported,0);
+ assert.equal((await request('/api/state')).data.replies.length,1);
+});
+
+test('IMAP stop received before sending cancels approval and blocks SMTP',async t=>{
+ let fake;const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db)).service});
+ const {p,m}=await approvedMail(request);
+ await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at});
+ await request(`/api/prospects/${p.id}/draft`,{});
+ let pending=(await request('/api/state')).data.messages.find(x=>x.status==='Brouillon');
+ await request(`/api/messages/${pending.id}/approve`,{confirm:pending.id});pending=(await request('/api/state')).data.messages.find(x=>x.id===pending.id);
+ const original=fake.sent[0].messageId;
+ fake.inbox.push({from:'recipient@example.com',messageId:'<stop@example.com>',raw:`From: recipient@example.com\r\nTo: contact@omnidigital.fr\r\nMessage-ID: <stop@example.com>\r\nIn-Reply-To: ${original}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nNe me contactez plus. STOP.`});
+ assert.equal((await request(`/api/messages/${pending.id}/send`,{confirm:pending.id,approvedAt:pending.approved_at})).status,400);
+ assert.equal(fake.sent.length,1);assert.equal((await request('/api/state')).data.prospects[0].status,'Opposition');
+});
+
+test('mail config is optional, never exposes the password, and connection checks send nothing',async t=>{
+ let fake;const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db)).service});
+ assert.equal((await request('/api/mail/verify',{})).status,200);assert.equal(fake.sent.length,0);
+ const state=(await request('/api/state')).data;assert.equal(state.integrations.mail.smtpHost,'smtp.hostinger.com');assert.equal(state.integrations.mail.password,undefined);
+ assert.equal(readMailConfig({}).configured,false);
+ assert.equal(readMailConfig({MAIL_PROVIDER:'other',MAIL_USER:'a@b.fr',MAIL_PASSWORD:'test'}).configured,false);
+});
+
+test('private dossier and PDF context never enter generated outgoing body',async t=>{
+ const {request,db}=await fixture(t);
+ const id=(await request('/api/prospects',{company:'Contexte privé',email:'context@example.com',notes:'NOTE INTERNE CONFIDENTIELLE',needs:'SEO local'})).data.id;
+ db.prepare('UPDATE prospects SET pdf_text=? WHERE id=?').run('CONTENU PDF INTERNE',id);
+ await request(`/api/prospects/${id}/sequence`,{});
+ for(const m of (await request('/api/state')).data.messages){assert.doesNotMatch(m.body,/NOTE INTERNE CONFIDENTIELLE|CONTENU PDF INTERNE/);assert.match(m.internal_context,/NOTE INTERNE CONFIDENTIELLE/)}
+});
+
+test('SMTP followup must wait seven days even when already approved',async t=>{
+ let fake;const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db)).service});
+ const id=(await request('/api/prospects',{company:'SMTP intervalle',email:'recipient@example.com'})).data.id;
+ await request(`/api/prospects/${id}/sequence`,{});
+ let messages=(await request('/api/state')).data.messages.sort((a,b)=>a.sequence_stage-b.sequence_stage);
+ await request(`/api/messages/${messages[0].id}/approve`,{confirm:messages[0].id});
+ messages=(await request('/api/state')).data.messages.sort((a,b)=>a.sequence_stage-b.sequence_stage);
+ await request(`/api/messages/${messages[0].id}/send`,{confirm:messages[0].id,approvedAt:messages[0].approved_at});
+ await request(`/api/messages/${messages[1].id}/approve`,{confirm:messages[1].id});
+ messages=(await request('/api/state')).data.messages.sort((a,b)=>a.sequence_stage-b.sequence_stage);
+ assert.equal((await request(`/api/messages/${messages[1].id}/send`,{confirm:messages[1].id,approvedAt:messages[1].approved_at})).status,400);
+ assert.equal(fake.sent.length,1);
+});
+
+test('large incoming mail from a known recipient pauses prospecting for manual review',async t=>{
+ let fake;const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db)).service});
+ const {p,m}=await approvedMail(request);
+ await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at});
+ await request(`/api/prospects/${p.id}/draft`,{});
+ fake.inbox.push({from:'recipient@example.com',messageId:'<large@example.com>',raw:'x'.repeat(513*1024)});
+ const result=(await request('/api/mail/sync',{})).data;assert.equal(result.reviewRequired,1);
+ const state=(await request('/api/state')).data;assert.equal(state.messages.filter(m=>m.status==='Brouillon'||m.status==='Approuvé').length,0);
+});
+
+test('interrupted IMAP batch retries safely without losing or duplicating replies',async t=>{
+ let fake;const options={};const {request}=await fixture(t,{serviceFactory:db=>(fake=fakeMailSetup(db,options)).service});
+ const {m}=await approvedMail(request);await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at});
+ for(let i=0;i<2;i++)fake.inbox.push({from:'recipient@example.com',messageId:`<batch-${i}@example.com>`,raw:`From: recipient@example.com\r\nMessage-ID: <batch-${i}@example.com>\r\nIn-Reply-To: ${fake.sent[0].messageId}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPouvez-vous préciser les informations ?`});
+ options.failFetchOnce=true;
+ assert.equal((await request('/api/mail/sync',{})).status,502);
+ assert.equal((await request('/api/state')).data.replies.length,1);
+ assert.equal((await request('/api/mail/sync',{})).status,200);
+ assert.equal((await request('/api/state')).data.replies.length,2);
 });

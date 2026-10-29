@@ -28,13 +28,22 @@ export function createSequence(db,p,draft){
  for(let stage=0;stage<4;stage++){
   const body=stage?bodies[stage]+'\n\nOmniDigital\nhttps://omnidigital.fr\n\nSi vous ne souhaitez plus être contacté, répondez simplement « stop ».':bodies[stage];
   const subject=stage===0?first.subject:stage===3?`Dernier message de ma part — ${p.company}`:`Re : ${first.subject}`;
-  db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,sequence_id,sequence_stage,due_at,forecast_at) VALUES(?,?,?,?,?,?,?,?,?)').run(id(),p.id,subject,body,created,sequenceId,stage,stage===0?created:'',new Date(Date.parse(created)+stage*7*86400000).toISOString());
+  db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,sequence_id,sequence_stage,due_at,forecast_at,internal_context) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id(),p.id,subject,body,created,sequenceId,stage,stage===0?created:'',new Date(Date.parse(created)+stage*7*86400000).toISOString(),first.context||'');
  }
  history(db,p.id,'Séquence préparée','Email initial + relances à J+7, J+14 et J+21 à titre indicatif. Chaque relance attend l’envoi confirmé de la précédente et une approbation individuelle.');
  return sequenceId;
 }
+export function stripQuotedReply(body){
+ const lines=String(body||'').replace(/\r/g,'').split('\n'),result=[];
+ for(const line of lines){
+  if(/^\s*(?:On .+wrote:|Le .+(?:écrit|ecrit)\s*:|[-_]{3,}.*(?:Original|Message)|From:|De\s*:)/i.test(line))break;
+  if(/^\s*>/.test(line))continue;
+  result.push(line);
+ }
+ return result.join('\n').trim();
+}
 export function classifyReply(text){
- const s=text.normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
+ const s=stripQuotedReply(text).normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
  if(/ne pas.*(?:contact|sollicit)|ne (?:souhaite|souhaitons) (?:pas|plus).*contact|cessez.*(?:contact|sollicit)|remove me|ne\s+(?:me\s+|nous\s+)?(?:contactez|contacter|sollicitez|solliciter).*plus|ne plus.*(?:contact|sollicit)|desinscri|unsubscribe|do not contact|\bstop\b|retirez.*(?:liste|coordonnees)|supprim.*(?:donnees|coordonnees)|nao.*(?:contact|contat|prospect)/.test(s))return 'Ne plus être contacté';
  if(/pas interesse|pas interesses|not interested|nao.*interess|refus.*offre/.test(s))return 'Pas intéressé / offre refusée';
  if(/absent|conges|out of office|reponse automatique/.test(s))return 'Autre';
@@ -48,7 +57,7 @@ export function classifyReply(text){
  return 'Autre';
 }
 const scenarioStatus={'Réponse positive':'Intéressé','Demande d’informations':'Contacté','Demande de rendez-vous':'Rendez-vous','Demande de devis / tarifs':'Intéressé','Pas maintenant / rappeler plus tard':'À recontacter','Pas de budget':'À recontacter','Déjà un prestataire':'À recontacter','Pas intéressé / offre refusée':'Pas intéressé','Ne plus être contacté':'Opposition','Demande de suppression des données':'Opposition','Entreprise fermée':'Perdu','Projet reporté':'À recontacter'};
-export function registerReply(db,p,body,scenario,draft){
+export function registerReply(db,p,body,scenario,draft,options={}){
  if(typeof body!=='string'||!body.trim()||body.length>20000)throw new PolicyError('Saisissez une réponse client, 20 000 caractères maximum.');
  if(scenario&&!SCENARIOS.includes(scenario))throw new PolicyError('Scénario invalide.');
  const detected=classifyReply(body);
@@ -63,10 +72,10 @@ export function registerReply(db,p,body,scenario,draft){
  if(stage==='Opposition')suppress(db,updated);
  history(db,p.id,'Réponse client enregistrée',chosen+'\n'+body);
  let messageId=null;
- if(!['Opposition','Pas intéressé','Perdu'].includes(stage)&&updated.do_not_email!=='Oui'&&!suppressed(db,updated)){
+ if(options.prepareDraft!==false&&!['Opposition','Pas intéressé','Perdu'].includes(stage)&&updated.do_not_email!=='Oui'&&!suppressed(db,updated)){
   assertDraftAllowed(db,updated);
   const reply=draft(updated);
-  messageId=id();db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,source_reply_id) VALUES(?,?,?,?,?,?)').run(messageId,p.id,'Re : '+reply.subject,reply.body,created,replyId);
+  messageId=id();db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,source_reply_id,internal_context) VALUES(?,?,?,?,?,?,?)').run(messageId,p.id,'Re : '+reply.subject,reply.body,created,replyId,reply.context||'');
  }
  return {replyId,scenario:chosen,suggested:detected,messageId,classification:'Règles de mots-clés, à vérifier manuellement. Aucun modèle IA ni messagerie connectée.'};
 }

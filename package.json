@@ -10,13 +10,16 @@
   },
   "scripts": {
     "start": "node server.js",
-    "build": "node --check server.js && node --check crm-server.js && node --check site-audit.js && node --check contact-policy.js && node --check outreach.js && node --check static/outreach-ui.js && node --check static/audit.js && node --check static/app.js && node --check static/dashboard.js",
+    "build": "node --check server.js && node --check crm-server.js && node --check site-audit.js && node --check contact-policy.js && node --check outreach.js && node --check mail-service.js && node --check static/outreach-ui.js && node --check static/audit.js && node --check static/app.js && node --check static/dashboard.js",
     "test": "node --test tests/server.test.js"
   },
   "dependencies": {
     "cheerio": "^1.2.0",
     "express": "5.3.0",
+    "imapflow": "^2.10.0",
     "ipaddr.js": "^2.5.0",
+    "mailparser": "^3.14.1",
+    "nodemailer": "^10.3.1",
     "pdfjs-dist": "6.4.299"
   }
 }

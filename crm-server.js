@@ -1,3 +1,4 @@
+import {MailService,readMailConfig,initMail} from './mail-service.js';
 import {initOutreach,createSequence,registerReply,messageAction,stopOutreach} from './outreach.js';
 import {CONTACT_STATUSES,POLICY_FIELDS,PolicyError,initPolicy,checkPolicyValues,isOpposed,suppressed,suppress,history,assertDraftAllowed,reconsent} from './contact-policy.js';
 import {auditWebsite,AuditError,inspectWebsite} from './site-audit.js';
@@ -33,7 +34,7 @@ export function validateConfig(env = process.env) {
     if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('CRM_PUBLIC_URL doit être une origine HTTPS, sans chemin.');
     if (inside(ROOT,dataDir)) throw new Error('Le dossier de données doit rester hors du répertoire de déploiement pour survivre aux mises à jour.');
   }
-  return { production, user, password, dataDir, publicUrl:env.CRM_PUBLIC_URL || '', pagespeedKey:env.PAGESPEED_API_KEY || '' };
+  return { production, user, password, dataDir, publicUrl:env.CRM_PUBLIC_URL || '', pagespeedKey:env.PAGESPEED_API_KEY || '',mail:readMailConfig(env) };
 }
 
 export function openDatabase(filename) {
@@ -47,6 +48,7 @@ export function openDatabase(filename) {
   const columns = new Set(db.prepare('PRAGMA table_info(prospects)').all().map(c=>c.name));
   for (const field of EXTRA_FIELDS) if (!columns.has(field)) db.exec(`ALTER TABLE prospects ADD COLUMN ${field} TEXT NOT NULL DEFAULT ''`);
   initOutreach(db);
+  initMail(db);
   initPolicy(db);
   return db;
 }
@@ -118,7 +120,9 @@ function draft(p) {
   let body = `Bonjour,\n\nJe vous contacte au nom d’OmniDigital au sujet de ${p.company}. Nous accompagnons les entreprises dans la création de sites web et leur marketing digital.\n\n`;
   if(p.response_details)body=`Bonjour${p.contact_name?' '+p.contact_name:''},\n\nMerci pour votre retour au sujet de ${p.company}.\n\n`;
   body += findings.length ? `Une analyse automatisée de votre site suggère des pistes concernant ${findings.join(', ')}. Ces résultats méritent une vérification avec votre contexte métier.\n\n` : 'Nous souhaitons échanger avec vous sur les possibilités d’amélioration de votre présence en ligne, en fonction de vos priorités.\n\n';
-  if (evidence) body += `Éléments du dossier à vérifier et reformuler avant envoi :\n${evidence.slice(0,1200)}\n\n`;
+  const points=(latestAudit.arguments||[]).slice(0,2).map(a=>a.title+' : '+a.argument);
+  if(points.length)body+='Pistes à étudier ensemble :\n'+points.map(x=>'• '+x).join('\n')+'\n\n';
+  else if(p.needs)body+='Nous pouvons échanger sur les besoins à confirmer suivants : '+p.needs.slice(0,500)+'.\n\n';
   const nextSteps={
     'Réponse positive':'Merci pour votre retour. Définissons ensemble un créneau pour examiner vos priorités.',
     'Demande d’informations':'Nous pouvons préciser les actions utiles à votre activité après un court diagnostic de vos besoins.',
@@ -131,7 +135,7 @@ function draft(p) {
     'Projet reporté':'Nous prenons note du report du projet. Nous pourrons reprendre la discussion à votre demande.'
   };
   body += (nextSteps[p.response_scenario] || 'Seriez-vous disponible pour un échange de 15 minutes afin d’identifier les actions les plus utiles pour votre activité ?')+'\n\nOmniDigital\nhttps://omnidigital.fr\n\nSi vous ne souhaitez plus être contacté, répondez simplement « stop ».';
-  return {subject:`${p.company} — pistes pour votre présence digitale`, body};
+  return {subject:`${p.company} — pistes pour votre présence digitale`, body,context:evidence};
 }
 
 export async function extractPdf(buffer) {
@@ -180,8 +184,10 @@ export function importText(db,text) {
   });
 }
 const digest = value => createHash('sha256').update(value).digest();
-export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=inspectWebsite}) {
+export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=inspectWebsite,mailService}) {
   const app=express();app.disable('x-powered-by');
+  const mail=mailService||new MailService({db,config:config.mail||readMailConfig({}),draft});
+  app.locals.mail=mail;
   app.use((req,res,next)=>{
     res.set({'X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin','X-Frame-Options':'DENY','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});
     if (config.user) {
@@ -201,8 +207,12 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     const prospects=db.prepare('SELECT * FROM prospects ORDER BY created DESC').all();
     const messages=db.prepare('SELECT m.*,p.company FROM messages m JOIN prospects p ON p.id=m.prospect_id ORDER BY m.created DESC').all();
     const counts=Object.fromEntries(db.prepare('SELECT kind,COUNT(DISTINCT message_id) AS n FROM events GROUP BY kind').all().map(x=>[x.kind,x.n]));
-    res.json({prospects,messages,sequences:db.prepare('SELECT * FROM outreach_sequences ORDER BY created DESC').all(),replies:db.prepare('SELECT * FROM prospect_replies ORDER BY created DESC').all(),duplicate_groups:duplicateGroups(prospects),metrics:{sent:messages.filter(m=>m.status==='Envoyé').length,opened:counts.open || 0,clicked:counts.click || 0,replied:counts.reply || 0},integrations:{pagespeed:!!config.pagespeedKey,email:false}});
+    res.json({prospects,messages,sequences:db.prepare('SELECT * FROM outreach_sequences ORDER BY created DESC').all(),replies:db.prepare('SELECT * FROM prospect_replies ORDER BY created DESC').all(),duplicate_groups:duplicateGroups(prospects),metrics:{sent:messages.filter(m=>m.status==='Envoyé').length,opened:counts.open || 0,clicked:counts.click || 0,replied:counts.reply || 0},integrations:{pagespeed:!!config.pagespeedKey,email:mail.status().configured,mail:mail.status()}});
   });
+  app.post('/api/mail/verify',async(req,res)=>res.json(await mail.verify()));
+  app.post('/api/mail/sync',async(req,res)=>res.json(await mail.sync()));
+  app.post('/api/messages/:id/send',async(req,res)=>res.json(await mail.send(req.params.id,req.body||{})));
+  app.post('/api/messages/:id/resolve-delivery',(req,res)=>res.json(mail.resolve(req.params.id,req.body||{})));
   app.post('/api/messages/:id/:action',(req,res)=>{
     const m=db.prepare('SELECT * FROM messages WHERE id=?').get(req.params.id);
     if(!m)throw new InputError('Message introuvable.',404);
@@ -260,13 +270,14 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
         history(db,id,'Changement de statut',p.status+' → '+req.body.status);
       } else if (action==='draft') {
         assertDraftAllowed(db,p);
-        const {subject,body}=draft(p);
-        db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created) VALUES(?,?,?,?,?)').run(randomUUID().replaceAll('-',''),id,subject,body,now());
+        const {subject,body,context}=draft(p);
+        db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,internal_context) VALUES(?,?,?,?,?,?)').run(randomUUID().replaceAll('-',''),id,subject,body,now(),context);
       } else if(action==='reconsent'){
         if(req.body?.confirm!==id)throw new PolicyError('Confirmation du nouvel accord requise.');
         reconsent(db,p,req.body.evidence);
       } else if (action==='delete') {
         if (req.body?.confirm!==id) throw new InputError('Confirmation de suppression requise.');
+        if(db.prepare("SELECT 1 FROM messages WHERE prospect_id=? AND status='Envoi en cours'").get(id))throw new InputError('Un envoi est en cours. Attendez sa fin avant de supprimer le contact.',409);
         if(isOpposed(p))suppress(db,p);
         db.prepare('DELETE FROM contact_history WHERE prospect_id=?').run(id);
         db.prepare('DELETE FROM outreach_sequences WHERE prospect_id=?').run(id);
@@ -296,8 +307,9 @@ export function startServer() {
       if (inside(realpathSync(ROOT),realpathSync(config.dataDir))) throw new Error('Le dossier persistant ne doit pas pointer dans le déploiement.');
     }
     const db=openDatabase(resolve(config.dataDir,'crm.sqlite3'));
-    const server=createApp({db,config}).listen(Number(process.env.PORT || 8000),config.production?'0.0.0.0':'127.0.0.1',()=>console.log('OmniDigital CRM — serveur Node.js démarré. port='+server.address().port));
-    const stop=()=>server.close(()=>{db.close();process.exit(0)});
+    const app=createApp({db,config});
+    const server=app.listen(Number(process.env.PORT || 8000),config.production?'0.0.0.0':'127.0.0.1',()=>{console.log('OmniDigital CRM — serveur Node.js démarré. port='+server.address().port);app.locals.mail.start()});
+    const stop=()=>{app.locals.mail.stop();server.close(()=>{db.close();process.exit(0)})};
     process.on('SIGTERM',stop);process.on('SIGINT',stop);
   } catch (error) { console.error(error.message);process.exitCode=1; }
 }
