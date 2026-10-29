@@ -7,6 +7,33 @@ ROOT = Path(__file__).parent
 DATA = Path(os.environ.get('CRM_DATA_DIR', ROOT / '.data'))
 DATA.mkdir(exist_ok=True, parents=True)
 DB = DATA / 'crm.sqlite3'
+CONTACT_FIELDS = ('contact_name','job_title','phone','mobile','address','postal_code','city','country','siren','industry','source','source_date','priority','next_followup','needs','services')
+
+def contact_values(data):
+    values = {key: str(data.get(key, '')).strip() for key in ('company','email','website','notes') + CONTACT_FIELDS}
+    if not values['company']: raise ValueError('Le nom de l’entreprise est requis.')
+    if any(len(value)>20000 for value in values.values()): raise ValueError('Un champ dépasse la taille maximale.')
+    if values['email'] and ('@' not in values['email'] or any(c.isspace() for c in values['email'])): raise ValueError('Adresse email invalide.')
+    if values['website'] and urllib.parse.urlsplit(values['website']).scheme not in ('http','https'): raise ValueError('Le site doit commencer par https:// ou http://.')
+    if values['priority'] not in ('','Faible','Moyenne','Haute'): raise ValueError('Priorité invalide.')
+    for key in ('source_date','next_followup'):
+        if values[key]:
+            try: datetime.strptime(values[key], '%Y-%m-%d')
+            except ValueError: raise ValueError('Date invalide : ' + key)
+    return values
+
+
+def save_contact(db, data, id=None):
+    values = contact_values(data)
+    if id:
+        if not db.execute('UPDATE prospects SET '+','.join(key+'=?' for key in values)+' WHERE id=?', (*values.values(),id)).rowcount:
+            raise ValueError('Prospect introuvable.')
+        return id
+    id = uuid.uuid4().hex
+    values.update(id=id,created=now())
+    db.execute('INSERT INTO prospects('+','.join(values)+') VALUES('+','.join('?' for _ in values)+')',tuple(values.values()))
+    return id
+
 
 def connect():
     db = sqlite3.connect(DB)
@@ -20,6 +47,10 @@ def init():
         CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, prospect_id TEXT NOT NULL REFERENCES prospects(id), subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Brouillon', created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES messages(id), kind TEXT NOT NULL, created TEXT NOT NULL);
         ''')
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(prospects)')}
+        for name in CONTACT_FIELDS:
+            if name not in columns:
+                db.execute('ALTER TABLE prospects ADD COLUMN '+name+" TEXT NOT NULL DEFAULT ''")
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def records(db, sql, args=()): return [dict(r) for r in db.execute(sql, args)]
@@ -31,7 +62,8 @@ def draft(prospect):
     if scores.get('performance', 100) < 70: findings.append('la vitesse de chargement de votre site')
     if scores.get('seo', 100) < 80: findings.append('la visibilité technique de votre site sur les moteurs de recherche')
     if scores.get('accessibility', 100) < 80: findings.append('l’accessibilité de votre parcours en ligne')
-    evidence = '\n'.join(x for x in [prospect['notes'], prospect['pdf_text'][:6000]] if x)
+    details = dict(prospect)
+    evidence = '\n'.join(x for x in [details.get('needs',''), details.get('services',''), prospect['notes'], prospect['pdf_text'][:6000]] if x)
     focus = ', '.join(findings) if findings else 'les possibilités d’amélioration de votre présence en ligne'
     body = f"Bonjour,\n\nJe vous contacte au nom d’OmniDigital au sujet de {prospect['company']}. Nous accompagnons les entreprises dans la création de sites web et leur marketing digital.\n\n"
     if findings: body += f"Une analyse automatisée de votre site suggère des pistes concernant {focus}. Ces résultats méritent une vérification avec votre contexte métier.\n\n"
@@ -87,17 +119,16 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(raw or b'{}')
             with connect() as db:
                 if path == '/api/prospects':
-                    company = str(data.get('company','')).strip()
-                    if not company: raise ValueError('Le nom de l’entreprise est requis.')
-                    id = uuid.uuid4().hex
-                    db.execute('INSERT INTO prospects(id,company,email,website,notes,created) VALUES(?,?,?,?,?,?)',(id,company,str(data.get('email','')).strip(),str(data.get('website','')).strip(),str(data.get('notes','')),now()))
+                    id = save_contact(db, data)
                     self.reply({'id':id},201); return
                 parts = path.strip('/').split('/')
                 if len(parts)==4 and parts[:2]==['api','prospects']:
                     id, action = parts[2:]
                     p = db.execute('SELECT * FROM prospects WHERE id=?',(id,)).fetchone()
                     if not p: raise ValueError('Prospect introuvable.')
-                    if action == 'status':
+                    if action == 'update':
+                        save_contact(db, data, id)
+                    elif action == 'status':
                         if data.get('status') not in ['Nouveau','Qualifié','Contacté','Gagné','Perdu','Opposition']: raise ValueError('Statut invalide.')
                         db.execute('UPDATE prospects SET status=? WHERE id=?',(data['status'],id))
                     elif action == 'draft':

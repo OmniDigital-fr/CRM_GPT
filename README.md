@@ -50,3 +50,9 @@ python import_prospect.py "chemin/rapport.pdf"
 L’importateur reconnaît les champs `Nom`, `Email`, `Site web`, coordonnées et opportunité des dossiers OmniDigital, conserve le texte complet (100 000 caractères maximum) et crée le prospect au statut Nouveau. Au besoin, fournir `--company`, `--email` et `--website`. Un dossier ayant la même entreprise et le même email n’est pas réimporté. Les observations du rapport ne sont pas une nouvelle mesure Google. Aucun message n’est envoyé. Actualisez l’interface après import.
 
 Les PDFs et la base sont des données locales : ne pas les ajouter à Git. Le GitHub Codespace et l’environnement cloud possèdent des bases distinctes.
+
+## Fiches de contact
+
+Le bouton « Nouveau prospect » ouvre une fiche avec entreprise, secteur, SIREN/SIRET, site, interlocuteur, fonction, email, téléphone, mobile, adresse, code postal, ville, pays, provenance et date de collecte, priorité, prochaine relance, besoins, services à proposer et notes. « Voir / modifier » permet de corriger ces données sans toucher au PDF ni au statut commercial. La prochaine relance est une date de suivi, sans déclenchement automatique d’email. Les nouveaux champs sont ajoutés automatiquement à la base existante au redémarrage du serveur.
+
+Palette bleu nuit/violet provisoire : le site de référence crm.omnidigital.fr a renvoyé HTTP 403 lors de la consultation. L’identité exacte reste à confirmer à partir d’une capture ou des couleurs officielles.
