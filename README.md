@@ -38,3 +38,15 @@ Les ressources sont séparées en prospects, messages et événements SQLite. L�
 python -m unittest discover -s tests -v
 node --check static/app.js
 ```
+
+## Importer un dossier de prospect PDF
+
+Chargez le PDF dans votre Codespace (glisser-déposer dans l’explorateur de fichiers), puis, depuis le même terminal/répertoire de données que le serveur :
+
+```sh
+python import_prospect.py "chemin/rapport.pdf"
+```
+
+L’importateur reconnaît les champs `Nom`, `Email`, `Site web`, coordonnées et opportunité des dossiers OmniDigital, conserve le texte complet (100 000 caractères maximum) et crée le prospect au statut Nouveau. Au besoin, fournir `--company`, `--email` et `--website`. Un dossier ayant la même entreprise et le même email n’est pas réimporté. Les observations du rapport ne sont pas une nouvelle mesure Google. Aucun message n’est envoyé. Actualisez l’interface après import.
+
+Les PDFs et la base sont des données locales : ne pas les ajouter à Git. Le GitHub Codespace et l’environnement cloud possèdent des bases distinctes.
