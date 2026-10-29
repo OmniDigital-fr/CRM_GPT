@@ -10,3 +10,17 @@ function render(){let m=state.metrics;const titles={dashboard:['Vue d’ensemble
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{view=b.dataset.view;render()});$('#add').onclick=()=>$('#modal').showModal();$('#cancel').onclick=()=>$('#modal').close();$('#create').onsubmit=async e=>{e.preventDefault();try{await api('/api/prospects',Object.fromEntries(new FormData(e.target)));e.target.reset();$('#modal').close();await refresh();notice('Prospect enregistré.')}catch(e){notice(e.message)}};
 $('#content').addEventListener('change',async e=>{if(e.target.dataset.status){try{await api(`/api/prospects/${e.target.dataset.status}/status`,{status:e.target.value});await refresh()}catch(e){notice(e.message);await refresh()}}});
 $('#content').addEventListener('click',async e=>{let b=e.target.closest('button');if(!b)return;try{if(b.dataset.action){b.disabled=true;notice(b.dataset.action==='audit'?'Analyse Google en cours…':'Préparation du brouillon…');await api(`/api/prospects/${b.dataset.id}/${b.dataset.action}`,{});if(b.dataset.action==='draft')view='campaigns';await refresh();notice('Opération terminée.')}if(b.dataset.pdf){let input=document.createElement('input');input.type='file';input.accept='application/pdf';input.onchange=async()=>{if(!input.files[0])return;try{await api(`/api/prospects/${b.dataset.pdf}/pdf`,input.files[0],true);await refresh();notice('Texte du PDF ajouté au dossier.')}catch(e){notice(e.message)}};input.click()}if(b.dataset.copy){await navigator.clipboard.writeText(state.messages.find(x=>x.id===b.dataset.copy).body);notice('Texte copié.')}}catch(e){notice(e.message)}finally{b.disabled=false}});refresh().catch(e=>notice(e.message));
+
+$('#import-pdf').onclick=()=>{
+ const input=document.createElement('input');input.type='file';input.accept='application/pdf';
+ input.onchange=async()=>{
+  if(!input.files[0])return;
+  const button=$('#import-pdf');button.disabled=true;
+  notice('Import du dossier PDF en cours…');
+  try{
+   const result=await api('/api/import-pdf',input.files[0],true);
+   view='prospects';await refresh();
+   notice(result.created?'Prospect créé avec le texte du rapport PDF. Aucun email envoyé.':'Ce prospect existe déjà. Aucun doublon créé.');
+  }catch(e){notice(e.message)}finally{button.disabled=false}
+ };input.click();
+};

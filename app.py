@@ -63,6 +63,15 @@ class Handler(BaseHTTPRequestHandler):
             if length > 12*1024*1024: raise ValueError('Fichier trop volumineux (12 Mo maximum).')
             raw = self.rfile.read(length)
             path = urllib.parse.urlsplit(self.path).path
+            if path == '/api/import-pdf':
+                if not raw.startswith(b'%PDF-'): raise ValueError('Un fichier PDF est requis.')
+                from import_prospect import import_report
+                with tempfile.TemporaryDirectory() as tmp:
+                    pdf = Path(tmp)/'rapport.pdf'
+                    pdf.write_bytes(raw)
+                    id, created = import_report(pdf)
+                self.reply({'id':id,'created':created},201 if created else 200)
+                return
             if path.endswith('/pdf'):
                 if not raw.startswith(b'%PDF-'): raise ValueError('Un fichier PDF est requis.')
                 with tempfile.TemporaryDirectory() as tmp:
@@ -111,7 +120,7 @@ class Handler(BaseHTTPRequestHandler):
                     else: self.reply({'error':'Action inconnue'},404); return
                     self.reply({'ok':True}); return
             self.reply({'error':'Introuvable'},404)
-        except (ValueError, subprocess.TimeoutExpired) as e: self.reply({'error':str(e)},400)
+        except (ValueError, subprocess.SubprocessError, FileNotFoundError) as e: self.reply({'error':str(e)},400)
         except Exception: self.reply({'error':'Erreur interne. Consultez la configuration du serveur.'},500)
 
 if __name__ == '__main__':
