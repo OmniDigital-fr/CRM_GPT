@@ -49,3 +49,11 @@ Ne pas déclarer l’installation prête tant que HTTPS, authentification et per
 ## Lanceur Hostinger
 
 `server.js` est un point d’entrée qui appelle toujours `startServer()`, y compris quand Hostinger l’importe depuis son lanceur. Les fonctions réutilisables et testables sont dans `crm-server.js`. Ne pas ajouter de condition `require.main` ou de comparaison avec `process.argv` autour du démarrage. Le test d’entrée reproduit l’import par un lanceur et vérifie une réponse HTTP en moins de trois secondes.
+
+## Mise à jour audit et suivi commercial
+
+Les nouveaux champs et tables SQLite sont ajoutés automatiquement au démarrage, sans suppression des contacts existants. Les dossiers et audits restent dans le même `CRM_DATA_DIR`. Faire une sauvegarde avant mise à jour importante.
+
+Pour analyser des sites publics, le serveur doit pouvoir résoudre leurs domaines et accéder à HTTP/HTTPS. La vérification HTTPS maintient la validation des certificats. `www.googleapis.com` doit être accessible si `PAGESPEED_API_KEY` est configurée. Sans clé, les audits HTML fonctionnent ; les performances Google restent non mesurées.
+
+Les séquences n’envoient rien : approbations individuelles, déclaration d’envoi manuel et saisie des réponses uniquement tant que le fournisseur email n’est pas connecté. Le système n’active pas de tâche planifiée d’envoi.

@@ -5,14 +5,18 @@
   "description": "OmniDigital CRM — contacts, prospection et dashboard",
   "type": "module",
   "main": "server.js",
-  "engines": { "node": ">=22.16.0" },
+  "engines": {
+    "node": ">=22.16.0"
+  },
   "scripts": {
     "start": "node server.js",
-    "build": "node --check server.js && node --check crm-server.js && node --check static/app.js && node --check static/dashboard.js",
+    "build": "node --check server.js && node --check crm-server.js && node --check site-audit.js && node --check contact-policy.js && node --check outreach.js && node --check static/outreach-ui.js && node --check static/audit.js && node --check static/app.js && node --check static/dashboard.js",
     "test": "node --test tests/server.test.js"
   },
   "dependencies": {
+    "cheerio": "^1.2.0",
     "express": "5.3.0",
+    "ipaddr.js": "^2.5.0",
     "pdfjs-dist": "6.4.299"
   }
 }

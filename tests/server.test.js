@@ -5,13 +5,18 @@ import {spawn} from 'node:child_process';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {auditWebsite,publicAddress,resolvePublic,siteUrl,analyzePage,AuditError} from '../site-audit.js';
 import {createApp,openDatabase,validateConfig,importText,extractPdf} from '../crm-server.js';
+
+function samplePage(url='https://example.com'){
+  return {url,status:200,ttfbMs:280,bytes:46000,contentType:'text/html',certificate:{validTo:'2027-01-01T00:00:00.000Z',daysRemaining:60},html:'<html><head><title>Exemple</title><meta name="description" content="Entreprise locale"><meta name="viewport" content="width=device-width"></head><body><h1>Exemple</h1><a href="tel:0102030405">Appeler</a></body></html>'};
+}
 
 async function fixture(t,overrides={}) {
   const dir=mkdtempSync(join(tmpdir(),'omni-node-'));
   const db=openDatabase(join(dir,'crm.sqlite3'));
   const config={production:false,user:'',password:'',publicUrl:'',pagespeedKey:'',...overrides.config};
-  const server=createApp({db,config,...overrides}).listen(0,'127.0.0.1');await once(server,'listening');
+  const server=createApp({db,config,inspect:async url=>samplePage(url),...overrides}).listen(0,'127.0.0.1');await once(server,'listening');
   t.after(async()=>{await new Promise(r=>server.close(r));db.close();rmSync(dir,{recursive:true,force:true})});
   const base='http://127.0.0.1:'+server.address().port;
   const request=async(path,data,headers={})=>{
@@ -139,4 +144,142 @@ test('Hostinger-style imported entry listens within three seconds with productio
   assert.equal((await fetch('http://127.0.0.1:'+port+'/api/state')).status,401);
   const response=await fetch('http://127.0.0.1:'+port+'/api/state',{headers:{Authorization:'Basic '+Buffer.from('entry-test:test-entry-password-only').toString('base64')}});
   assert.equal(response.status,200);assert.deepEqual((await response.json()).prospects,[]);
+});
+
+test('audit history persists without Google key, feeds drafts and is deleted with contact',async t=>{
+  const {request,db}=await fixture(t);
+  const id=(await request('/api/prospects',{company:'Audit complet',website:'https://example.com'})).data.id;
+  for(let i=0;i<2;i++)assert.equal((await request(`/api/prospects/${id}/audit`,{})).status,200);
+  const history=(await request(`/api/prospects/${id}/audits`)).data.audits;
+  assert.equal(history.length,2);assert.notEqual(history[0].id,history[1].id);
+  assert.equal(history[0].pagespeed.state,'unconfigured');
+  assert.equal(history[0].checks.find(c=>c.key==='reviews').state,'unknown');
+  assert.equal(history[0].checks.find(c=>c.key==='performance').value,'Non mesurée');
+  assert.match(history[0].checks.find(c=>c.key==='response').detail,/pas le chargement complet/);
+  assert.ok(history[0].arguments.length>0);
+  await request(`/api/prospects/${id}/draft`,{});
+  assert.match((await request('/api/state')).data.messages[0].body,/Balisage local/);
+  await request(`/api/prospects/${id}/delete`,{confirm:id});
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM site_audits').get().n,0);
+});
+
+test('Google failure preserves HTML results and does not fabricate mobile scores',async()=>{
+  const result=await auditWebsite('https://example.com',{pagespeedKey:'test-only',inspect:async()=>samplePage(),fetcher:async()=>({ok:false,status:403})});
+  assert.equal(result.pagespeed.state,'unavailable');assert.deepEqual(result.scores,{});
+  assert.equal(result.checks.find(c=>c.key==='mobile').state,'pass');
+  assert.match(result.checks.find(c=>c.key==='mobile').detail,/rendu réel/);
+});
+
+test('HTML detectors recognize evidence and distinguish blocked pages from missing features',()=>{
+  const page=samplePage();page.html+='<script type="application/ld+json">{"@type":"Electrician"}</script><script src="https://www.googletagmanager.com/gtm.js"></script><a href="https://www.instagram.com/exemple">Instagram</a><form></form>';
+  const result=analyzePage(page);
+  assert.equal(result.checks.find(c=>c.key==='schema').state,'pass');
+  assert.equal(result.checks.find(c=>c.key==='social').value,'Instagram');
+  assert.match(result.checks.find(c=>c.key==='conversion').value,/formulaire/);
+  const blocked=analyzePage({...page,status:403});
+  assert.equal(blocked.checks.find(c=>c.key==='site').state,'fail');
+  assert.equal(blocked.checks.find(c=>c.key==='seo').state,'unknown');
+  assert.equal(blocked.arguments.length,1);
+});
+
+test('audit network validation rejects private, reserved and mixed DNS destinations',async()=>{
+  for(const ip of ['127.0.0.1','10.0.0.1','169.254.169.254','192.168.0.1','::1','::ffff:127.0.0.1','fc00::1','0.0.0.0','100.64.0.1'])assert.equal(publicAddress(ip),false,ip);
+  assert.equal(publicAddress('8.8.8.8'),true);
+  assert.throws(()=>siteUrl('file:///etc/passwd'),AuditError);
+  assert.throws(()=>siteUrl('https://user:pass@example.com'),AuditError);
+  assert.throws(()=>siteUrl('http://example.com:8000'),AuditError);
+  await assert.rejects(()=>resolvePublic('127.0.0.1'),/privées/);
+  await assert.rejects(()=>resolvePublic('example.com',async()=>[{address:'8.8.8.8',family:4},{address:'10.0.0.1',family:4}]),/privées/);
+});
+
+test('opt-out blocks drafts, clears followups, survives deletion and prevents reimport',async t=>{
+ const {request,db}=await fixture(t);
+ const input={company:'Prospect protégé',email:'stop@example.com',next_followup:'2026-11-05'};
+ const id=(await request('/api/prospects',input)).data.id;
+ await request(`/api/prospects/${id}/sequence`,{});
+ await request(`/api/prospects/${id}/status`,{status:'Opposition'});
+ const p=(await request('/api/state')).data.prospects[0];assert.equal(p.next_followup,'');assert.equal(p.contact_permission,'Opposition');
+ assert.equal((await request(`/api/prospects/${id}/draft`,{})).status,400);
+ assert.equal((await request(`/api/prospects/${id}/status`,{status:'Contacté'})).status,400);
+ assert.ok((await request(`/api/prospects/${id}/history`)).data.history.some(h=>h.kind==='Changement de statut'));
+ await request(`/api/prospects/${id}/delete`,{confirm:id});
+ assert.equal((await request('/api/prospects',input)).status,409);
+ assert.equal((await request('/api/prospects',{company:'Autre nom',email:'STOP@example.com'})).status,409);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM prospects').get().n,0);
+});
+
+test('commercial refusal and channel restrictions differ from global opposition',async t=>{
+ const {request}=await fixture(t);
+ const input={company:'Refus commercial',email:'refus@example.com',status:'Pas intéressé',response_scenario:'Pas intéressé / offre refusée',contact_permission:'À vérifier',next_followup:'2026-11-10'};
+ const id=(await request('/api/prospects',input)).data.id;
+ let p=(await request('/api/state')).data.prospects[0];assert.equal(p.next_followup,'');assert.notEqual(p.contact_permission,'Opposition');
+ assert.equal((await request(`/api/prospects/${id}/draft`,{})).status,400);
+ await request(`/api/prospects/${id}/update`,{...input,status:'À recontacter',do_not_email:'Oui'});
+ assert.equal((await request(`/api/prospects/${id}/draft`,{})).status,400);
+ await request(`/api/prospects/${id}/update`,{...input,status:'À recontacter',do_not_email:'Non'});
+ assert.equal((await request(`/api/prospects/${id}/draft`,{})).status,200);
+});
+
+test('new documented consent is explicit and preserves a dated history',async t=>{
+ const {request}=await fixture(t);
+ const id=(await request('/api/prospects',{company:'Accord nouveau',email:'accord@example.com',contact_permission:'Opposition'})).data.id;
+ assert.equal((await request(`/api/prospects/${id}/reconsent`,{confirm:id,evidence:''})).status,400);
+ assert.equal((await request(`/api/prospects/${id}/reconsent`,{confirm:id,evidence:'Accord reçu par email le 29 octobre 2026, demande de devis.'})).status,200);
+ const p=(await request('/api/state')).data.prospects[0];assert.equal(p.contact_permission,'Accord explicite');assert.equal(p.next_followup,'');
+ assert.equal((await request(`/api/prospects/${id}/draft`,{})).status,200);
+ assert.ok((await request(`/api/prospects/${id}/history`)).data.history.some(h=>h.kind==='Nouvel accord documenté'));
+});
+
+test('sequence has 4 individual approvals and schedules followup 7 days after actual recorded send',async t=>{
+ const {request,db}=await fixture(t);
+ const id=(await request('/api/prospects',{company:'Séquence sept jours',email:'sequence@example.com'})).data.id;
+ assert.equal((await request(`/api/prospects/${id}/sequence`,{})).status,201);
+ assert.equal((await request(`/api/prospects/${id}/sequence`,{})).status,409);
+ let messages=(await request('/api/state')).data.messages.sort((a,b)=>a.sequence_stage-b.sequence_stage);
+ assert.equal(messages.length,4);assert.equal(messages[1].due_at,'');
+ const first=messages[0];assert.equal((await request(`/api/messages/${first.id}/record-sent`,{confirm:first.id})).status,400);
+ assert.equal((await request(`/api/messages/${first.id}/approve`,{confirm:first.id})).status,200);
+ assert.equal((await request('/api/state')).data.metrics.sent,0);
+ assert.equal((await request(`/api/messages/${first.id}/record-sent`,{confirm:first.id})).status,200);
+ messages=(await request('/api/state')).data.messages.sort((a,b)=>a.sequence_stage-b.sequence_stage);
+ assert.equal(Date.parse(messages[1].due_at)-Date.parse(messages[0].sent_at),7*86400000);
+ await request(`/api/messages/${messages[1].id}/approve`,{confirm:messages[1].id});
+ assert.equal((await request(`/api/messages/${messages[1].id}/record-sent`,{confirm:messages[1].id})).status,400);
+ assert.equal(db.prepare("SELECT COUNT(*) n FROM messages WHERE status='Envoyé'").get().n,1);
+});
+
+test('editing an approved message or recipient revokes approval',async t=>{
+ const {request}=await fixture(t);
+ const input={company:'Approbation',email:'initial@example.com'};
+ const id=(await request('/api/prospects',input)).data.id;
+ await request(`/api/prospects/${id}/draft`,{});
+ const m=(await request('/api/state')).data.messages[0];
+ await request(`/api/messages/${m.id}/approve`,{confirm:m.id});
+ await request(`/api/messages/${m.id}/update`,{subject:'Nouvel objet',body:'Nouveau texte à approuver.'});
+ assert.equal((await request('/api/state')).data.messages[0].status,'Brouillon');
+ await request(`/api/messages/${m.id}/approve`,{confirm:m.id});
+ await request(`/api/prospects/${id}/update`,{...input,email:'nouveau@example.com'});
+ assert.equal((await request('/api/state')).data.messages[0].status,'Brouillon');
+});
+
+test('incoming response pauses sequence, cancels approvals and proposes a reviewed reply',async t=>{
+ const {request}=await fixture(t);
+ const id=(await request('/api/prospects',{company:'Client répond',email:'reply@example.com'})).data.id;
+ await request(`/api/prospects/${id}/sequence`,{});
+ const m=(await request('/api/state')).data.messages[0];await request(`/api/messages/${m.id}/approve`,{confirm:m.id});
+ const response=await request(`/api/prospects/${id}/reply`,{body:'Bonjour, pouvez-vous me donner vos tarifs ?'});
+ assert.equal(response.status,201);assert.equal(response.data.scenario,'Demande de devis / tarifs');assert.ok(response.data.messageId);
+ const state=(await request('/api/state')).data;
+ assert.equal(state.sequences[0].state,'En pause');assert.equal(state.messages.filter(m=>m.status==='Annulé').length,4);
+ assert.equal(state.messages.find(m=>m.id===response.data.messageId).status,'Brouillon');
+ assert.equal(state.metrics.sent,0);
+});
+
+test('explicit stop overrides permissive classification and never prepares a reply',async t=>{
+ const {request}=await fixture(t);
+ const id=(await request('/api/prospects',{company:'Opposition réponse',email:'optout@example.com'})).data.id;
+ await request(`/api/prospects/${id}/sequence`,{});
+ const response=await request(`/api/prospects/${id}/reply`,{body:'Merci de ne plus me contacter. Retirez mes coordonnées de votre liste.',scenario:'Réponse positive'});
+ assert.equal(response.status,201);assert.equal(response.data.messageId,null);
+ const state=(await request('/api/state')).data;assert.equal(state.prospects[0].status,'Opposition');assert.equal(state.messages.filter(m=>m.status==='Brouillon'||m.status==='Approuvé').length,0);
 });
