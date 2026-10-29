@@ -85,7 +85,7 @@ class Handler(BaseHTTPRequestHandler):
                 counts = dict(db.execute('SELECT kind, COUNT(DISTINCT message_id) FROM events GROUP BY kind').fetchall())
             sent = sum(m['status']=='Envoyé' for m in messages)
             self.reply(dict(prospects=prospects,messages=messages,metrics=dict(sent=sent,opened=counts.get('open',0),clicked=counts.get('click',0),replied=counts.get('reply',0)), integrations={'pagespeed': bool(os.environ.get('PAGESPEED_API_KEY')), 'email':False})); return
-        files = {'/':'index.html','/style.css':'style.css','/app.js':'app.js'}
+        files = {'/':'index.html','/style.css':'style.css','/app.js':'app.js','/dashboard.js':'dashboard.js'}
         if path not in files: self.reply({'error':'Introuvable'},404); return
         file = ROOT/'static'/files[path]
         self.send_response(200); self.send_header('Content-Type',{'html':'text/html; charset=utf-8','css':'text/css','js':'text/javascript'}[file.suffix[1:]]); self.end_headers(); self.wfile.write(file.read_bytes())

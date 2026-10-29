@@ -56,3 +56,9 @@ Les PDFs et la base sont des données locales : ne pas les ajouter à Git. Le Gi
 Le bouton « Nouveau prospect » ouvre une fiche avec entreprise, secteur, SIREN/SIRET, site, interlocuteur, fonction, email, téléphone, mobile, adresse, complément d’adresse / lieu-dit, code postal, ville, pays, provenance et date de collecte, priorité, prochaine relance, besoins, services à proposer et notes. « Voir / modifier » permet de corriger ces données sans toucher au PDF ni au statut commercial. La prochaine relance est une date de suivi, sans déclenchement automatique d’email. Les nouveaux champs sont ajoutés automatiquement à la base existante au redémarrage du serveur.
 
 Palette bleu nuit/violet provisoire : le site de référence crm.omnidigital.fr a renvoyé HTTP 403 lors de la consultation. L’identité exacte reste à confirmer à partir d’une capture ou des couleurs officielles.
+
+## Dashboard
+
+Structure visuelle inspirée de la capture du CRM précédent : navigation sombre, bandeau bleu/violet, neuf indicateurs, graphique comparatif et pipeline. Interface en français, recherche sur entreprise/contact/email/téléphone/ville, thème clair ou sombre mémorisé dans le navigateur et mise en page mobile. Le logo est une composition typographique provisoire, pas le fichier original.
+
+Les graphiques montrent les créations de contacts ou de brouillons réellement enregistrées, par jour, avec comparaison au mois précédent (dates Europe/Paris). Les statistiques de messagerie non connectées sont indiquées comme indisponibles. Les relances à traiter correspondent aux échéances atteintes, hors dossiers gagnés, perdus ou en opposition ; les contacts prioritaires correspondent à la priorité Haute. Aucun moteur d’envoi n’est lancé. Les sections Séquences et Automatisation annoncent explicitement les connexions restant à réaliser. Les états du pipeline existant sont conservés.
