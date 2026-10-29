@@ -1,3 +1,24 @@
+# OmniDigital CRM
+
+## Serveur Node.js — version principale pour Hostinger
+
+Node.js **22.16+** (22 récent ou 24), Express, SQLite et extraction PDF JavaScript. Les interfaces et la base restent compatibles avec le prototype Python. Le serveur Node n’a pas besoin de `pdftotext`.
+
+```sh
+npm ci
+npm run build
+npm test
+npm start
+```
+
+En développement : serveur local sur le port 8000, données dans `.data/crm.sqlite3`. `PORT` et `CRM_DATA_DIR` permettent de les modifier. Utiliser le checkout existant ; aucun worktree supplémentaire nécessaire. Lancer un seul serveur à la fois.
+
+Pour **crm2.omnidigital.fr**, suivre [HOSTINGER.md](HOSTINGER.md) : import GitHub, paramètres Express, authentification obligatoire en production, HTTPS et stockage persistant hors du déploiement. Une nouvelle publication du code ne transfère pas les données du Codespace. Le déploiement automatique doit être activé dans hPanel.
+
+Les fichiers Python ci-dessous sont conservés comme version locale historique ; ils ne sont pas le point d’entrée Hostinger et n’offrent pas la protection d’accès du serveur Node.
+
+---
+
 # OmniDigital CRM — première version locale
 
 CRM en français, Python 3.12+, SQLite, interface web sans compilation. Aucun paquet Python externe. Dépendance système : `pdftotext` (paquet `poppler-utils`).
