@@ -7,7 +7,7 @@ ROOT = Path(__file__).parent
 DATA = Path(os.environ.get('CRM_DATA_DIR', ROOT / '.data'))
 DATA.mkdir(exist_ok=True, parents=True)
 DB = DATA / 'crm.sqlite3'
-CONTACT_FIELDS = ('contact_name','job_title','phone','mobile','address','postal_code','city','country','siren','industry','source','source_date','priority','next_followup','needs','services')
+CONTACT_FIELDS = ('contact_name','job_title','phone','mobile','address','address2','postal_code','city','country','siren','industry','source','source_date','priority','next_followup','needs','services')
 
 def contact_values(data):
     values = {key: str(data.get(key, '')).strip() for key in ('company','email','website','notes') + CONTACT_FIELDS}
