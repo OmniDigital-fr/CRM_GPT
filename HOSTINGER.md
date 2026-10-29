@@ -44,3 +44,8 @@ Le lecteur PDF fonctionne en JavaScript sans commande système `pdftotext`. PDF 
 - Supprimer uniquement le contact de test après validation.
 
 Ne pas déclarer l’installation prête tant que HTTPS, authentification et persistance après redéploiement ne sont pas validés.
+
+
+## Lanceur Hostinger
+
+`server.js` est un point d’entrée qui appelle toujours `startServer()`, y compris quand Hostinger l’importe depuis son lanceur. Les fonctions réutilisables et testables sont dans `crm-server.js`. Ne pas ajouter de condition `require.main` ou de comparaison avec `process.argv` autour du démarrage. Le test d’entrée reproduit l’import par un lanceur et vérifie une réponse HTTP en moins de trois secondes.

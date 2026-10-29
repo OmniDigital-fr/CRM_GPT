@@ -8,7 +8,7 @@
   "engines": { "node": ">=22.16.0" },
   "scripts": {
     "start": "node server.js",
-    "build": "node --check server.js && node --check static/app.js && node --check static/dashboard.js",
+    "build": "node --check server.js && node --check crm-server.js && node --check static/app.js && node --check static/dashboard.js",
     "test": "node --test tests/server.test.js"
   },
   "dependencies": {

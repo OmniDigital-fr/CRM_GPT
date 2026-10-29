@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
+import {spawn} from 'node:child_process';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createApp,openDatabase,validateConfig,importText,extractPdf} from '../server.js';
+import {createApp,openDatabase,validateConfig,importText,extractPdf} from '../crm-server.js';
 
 async function fixture(t,overrides={}) {
   const dir=mkdtempSync(join(tmpdir(),'omni-node-'));
@@ -111,4 +112,31 @@ test('real JavaScript PDF extraction and empty-document handling',async()=>{
   assert.match(text,/Example PDF/);
   await assert.rejects(()=>extractPdf(pdfFixture('')),/OCR/);
   await assert.rejects(()=>extractPdf(Buffer.from('not a PDF')),/PDF/);
+});
+
+test('Hostinger-style imported entry listens within three seconds with production auth', {timeout:6000}, async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'omni-entry-'));
+  const child=spawn(process.execPath,['--input-type=module','--eval',"await import('./server.js')"],{
+    cwd:new URL('..',import.meta.url),
+    env:{...process.env,NODE_ENV:'production',PORT:'0',CRM_DATA_DIR:dir,CRM_PUBLIC_URL:'https://crm2.omnidigital.fr',CRM_AUTH_USER:'entry-test',CRM_AUTH_PASSWORD:'test-entry-password-only'}
+  });
+  let errors='';child.stderr.on('data',chunk=>errors+=chunk);
+  t.after(async()=>{
+    if(child.exitCode===null){const closed=once(child,'exit');child.kill('SIGTERM');await closed;}
+    rmSync(dir,{recursive:true,force:true});
+  });
+  const port=await new Promise((resolve,reject)=>{
+    let output='';
+    const timer=setTimeout(()=>reject(new Error('Entry did not listen within 3 seconds. '+errors)),3000);
+    child.stdout.on('data',chunk=>{
+      output+=chunk;
+      const match=output.match(/port=(\d+)/);
+      if(match){clearTimeout(timer);resolve(Number(match[1]));}
+    });
+    child.once('error',error=>{clearTimeout(timer);reject(error)});
+    child.once('exit',code=>{clearTimeout(timer);reject(new Error('Entry exited: '+code+' '+errors))});
+  });
+  assert.equal((await fetch('http://127.0.0.1:'+port+'/api/state')).status,401);
+  const response=await fetch('http://127.0.0.1:'+port+'/api/state',{headers:{Authorization:'Basic '+Buffer.from('entry-test:test-entry-password-only').toString('base64')}});
+  assert.equal(response.status,200);assert.deepEqual((await response.json()).prospects,[]);
 });
