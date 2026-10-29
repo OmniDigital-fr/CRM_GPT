@@ -40,4 +40,50 @@ class CRMTests(unittest.TestCase):
             for data in ({'company':''},{'company':'A','website':'javascript:test'},{'company':'A','next_followup':'2026-99-01'}):
                 with self.assertRaises(ValueError): app.save_contact(db,data)
 
+    def test_normalized_duplicates_and_edit(self):
+        with app.connect() as db:
+            id=app.save_contact(db,{'company':'AB Électricien','email':'David@example.com'})
+        for data in ({'company':' ab-electricien ','email':'other@example.com'},{'company':'Autre société','email':' david@EXAMPLE.com '}):
+            with app.connect() as db:
+                with self.assertRaises(app.DuplicateContact): app.save_contact(db,data)
+        with app.connect() as db:
+            other=app.save_contact(db,{'company':'Société B'})
+        with app.connect() as db:
+            with self.assertRaises(app.DuplicateContact): app.save_contact(db,{'company':'AB Electricien'},other)
+        with app.connect() as db:
+            app.save_contact(db,{'company':'AB Électricien','email':'david@example.com'},id)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM prospects').fetchone()[0],2)
+
+    def test_delete_cleans_children_only_for_selected_contact(self):
+        with app.connect() as db:
+            id=app.save_contact(db,{'company':'À supprimer'})
+            keep=app.save_contact(db,{'company':'À conserver'})
+            db.execute('INSERT INTO messages(id,prospect_id,subject,body,created) VALUES(?,?,?,?,?)',('m',id,'Objet','Texte',app.now()))
+            db.execute('INSERT INTO events VALUES(?,?,?,?)',('e','m','open',app.now()))
+        with app.connect() as db: app.delete_contact(db,id)
+        with app.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM messages').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM events').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT id FROM prospects').fetchone()[0],keep)
+
+    def test_import_duplicate_preserves_existing_report(self):
+        from unittest.mock import patch
+        from import_prospect import import_report
+        with app.connect() as db:
+            id=app.save_contact(db,{'company':'AB Électricien','email':'david@example.com'})
+            db.execute('UPDATE prospects SET pdf_text=? WHERE id=?',('Original',id))
+        with patch('import_prospect.extract',return_value='Nom  AB-ELECTRICIEN\nEmail  other@example.com'):
+            imported,created=import_report(Path('test.pdf'))
+        self.assertEqual(imported,id);self.assertFalse(created)
+        with app.connect() as db:
+            self.assertEqual(db.execute('SELECT pdf_text FROM prospects WHERE id=?',(id,)).fetchone()[0],'Original')
+
+    def test_existing_duplicates_are_reported(self):
+        with app.connect() as db:
+            for id,name in [('a','Électricien'),('b','electricien')]:
+                db.execute('INSERT INTO prospects(id,company,created) VALUES(?,?,?)',(id,name,app.now()))
+            groups=app.duplicate_groups(app.records(db,'SELECT * FROM prospects'))
+        self.assertEqual(len(groups),1)
+        self.assertEqual(set(groups[0]['ids']),{'a','b'})
+
 if __name__=='__main__': unittest.main()

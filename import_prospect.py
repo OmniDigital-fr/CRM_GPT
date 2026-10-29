@@ -3,7 +3,6 @@ import argparse
 import re
 import subprocess
 from pathlib import Path
-import uuid
 import app
 
 
@@ -37,11 +36,12 @@ def import_report(path, company=None, email=None, website=None):
         notes.append('Opportunité selon le rapport : ' + opportunity.group(1).strip())
     app.init()
     with app.connect() as db:
-        existing = db.execute('SELECT id FROM prospects WHERE company=? AND COALESCE(email,\'\')=?', (company, email)).fetchone()
+        db.execute('BEGIN IMMEDIATE')
+        existing = app.matching_contact(db, company, email)
         if existing:
             return existing['id'], False
-        id = uuid.uuid4().hex
-        db.execute('INSERT INTO prospects(id,company,email,website,notes,pdf_text,created) VALUES(?,?,?,?,?,?,?)', (id, company, email, website, '\n'.join(notes), text[:100000], app.now()))
+        id = app.save_contact(db, {'company':company,'email':email,'website':website,'notes':'\n'.join(notes)})
+        db.execute('UPDATE prospects SET pdf_text=? WHERE id=?',(text[:100000],id))
     return id, True
 
 

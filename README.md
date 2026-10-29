@@ -47,7 +47,7 @@ Chargez le PDF dans votre Codespace (glisser-déposer dans l’explorateur de fi
 python import_prospect.py "chemin/rapport.pdf"
 ```
 
-L’importateur reconnaît les champs `Nom`, `Email`, `Site web`, coordonnées et opportunité des dossiers OmniDigital, conserve le texte complet (100 000 caractères maximum) et crée le prospect au statut Nouveau. Au besoin, fournir `--company`, `--email` et `--website`. Un dossier ayant la même entreprise et le même email n’est pas réimporté. Les observations du rapport ne sont pas une nouvelle mesure Google. Aucun message n’est envoyé. Actualisez l’interface après import.
+L’importateur reconnaît les champs `Nom`, `Email`, `Site web`, coordonnées et opportunité des dossiers OmniDigital, conserve le texte complet (100 000 caractères maximum) et crée le prospect au statut Nouveau. Au besoin, fournir `--company`, `--email` et `--website`. Un dossier ayant le même nom d’entreprise normalisé ou le même email n’est pas réimporté. Les observations du rapport ne sont pas une nouvelle mesure Google. Aucun message n’est envoyé. Actualisez l’interface après import.
 
 Les PDFs et la base sont des données locales : ne pas les ajouter à Git. Le GitHub Codespace et l’environnement cloud possèdent des bases distinctes.
 
@@ -62,3 +62,10 @@ Palette bleu nuit/violet provisoire : le site de référence crm.omnidigital.fr 
 Structure visuelle inspirée de la capture du CRM précédent : navigation sombre, bandeau bleu/violet, neuf indicateurs, graphique comparatif et pipeline. Interface en français, recherche sur entreprise/contact/email/téléphone/ville, thème clair ou sombre mémorisé dans le navigateur et mise en page mobile. Le logo est une composition typographique provisoire, pas le fichier original.
 
 Les graphiques montrent les créations de contacts ou de brouillons réellement enregistrées, par jour, avec comparaison au mois précédent (dates Europe/Paris). Les statistiques de messagerie non connectées sont indiquées comme indisponibles. Les relances à traiter correspondent aux échéances atteintes, hors dossiers gagnés, perdus ou en opposition ; les contacts prioritaires correspondent à la priorité Haute. Aucun moteur d’envoi n’est lancé. Les sections Séquences et Automatisation annoncent explicitement les connexions restant à réaliser. Les états du pipeline existant sont conservés.
+
+
+## Suppression et doublons
+
+Dans Contacts, « Supprimer » ouvre une confirmation explicite. La suppression est définitive pour la fiche, le texte PDF, les analyses, les messages et événements associés dans la base active ; elle ne modifie pas les sauvegardes externes. Annuler conserve les données.
+
+La création, l’édition et l’import contrôlent le nom d’entreprise (majuscules, accents, espaces et ponctuation ignorés) et l’email (espaces externes et casse ignorés). Une même entreprise ou un même email bloque une seconde fiche. Le nom de l’interlocuteur seul ne bloque pas les homonymes de sociétés différentes. Les créations concurrentes sont sérialisées pendant la vérification. Les doublons historiques sont signalés dans Contacts et ne sont ni fusionnés ni supprimés automatiquement. Un import en doublon conserve le dossier existant sans l’écraser.

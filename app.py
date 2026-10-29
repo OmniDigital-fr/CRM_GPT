@@ -1,4 +1,4 @@
-import json, os, sqlite3, subprocess, tempfile, uuid, urllib.request, urllib.parse
+import json, os, sqlite3, subprocess, tempfile, uuid, urllib.request, urllib.parse, unicodedata
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -8,6 +8,45 @@ DATA = Path(os.environ.get('CRM_DATA_DIR', ROOT / '.data'))
 DATA.mkdir(exist_ok=True, parents=True)
 DB = DATA / 'crm.sqlite3'
 CONTACT_FIELDS = ('contact_name','job_title','phone','mobile','address','address2','postal_code','city','country','siren','industry','source','source_date','priority','next_followup','needs','services')
+
+class DuplicateContact(ValueError):
+    pass
+
+
+def normalized(value):
+    text = unicodedata.normalize('NFKD', str(value or '')).casefold()
+    return ''.join(c for c in text if c.isalnum() and not unicodedata.combining(c))
+
+
+def email_key(value):
+    return str(value or '').strip().casefold()
+
+
+def matching_contact(db, company, email='', exclude_id=None):
+    name_key, mail_key = normalized(company), email_key(email)
+    for row in db.execute('SELECT id,company,email FROM prospects ORDER BY created,id'):
+        if row['id'] == exclude_id: continue
+        if (name_key and normalized(row['company']) == name_key) or (mail_key and email_key(row['email']) == mail_key):
+            return row
+    return None
+
+
+def duplicate_groups(prospects):
+    groups = {}
+    for p in prospects:
+        for field, key in [('company',normalized(p['company'])),('email',email_key(p['email']))]:
+            if key: groups.setdefault((field,key),[]).append(p['id'])
+    return [{'field':field,'ids':ids} for (field,key),ids in groups.items() if len(ids)>1]
+
+
+def delete_contact(db, id):
+    # Explicit child cleanup also works with databases created before FK enforcement.
+    if not db.execute('SELECT 1 FROM prospects WHERE id=?',(id,)).fetchone():
+        raise ValueError('Prospect introuvable.')
+    db.execute('DELETE FROM events WHERE message_id IN (SELECT id FROM messages WHERE prospect_id=?)',(id,))
+    db.execute('DELETE FROM messages WHERE prospect_id=?',(id,))
+    db.execute('DELETE FROM prospects WHERE id=?',(id,))
+
 
 def contact_values(data):
     values = {key: str(data.get(key, '')).strip() for key in ('company','email','website','notes') + CONTACT_FIELDS}
@@ -25,6 +64,10 @@ def contact_values(data):
 
 def save_contact(db, data, id=None):
     values = contact_values(data)
+    if not db.in_transaction: db.execute('BEGIN IMMEDIATE')
+    existing = matching_contact(db,values['company'],values['email'],id)
+    if existing:
+        raise DuplicateContact('Doublon détecté : une fiche « '+existing['company']+' » existe déjà avec ce nom d’entreprise ou cet email. Modifiez la fiche existante.')
     if id:
         if not db.execute('UPDATE prospects SET '+','.join(key+'=?' for key in values)+' WHERE id=?', (*values.values(),id)).rowcount:
             raise ValueError('Prospect introuvable.')
@@ -84,7 +127,7 @@ class Handler(BaseHTTPRequestHandler):
                 messages = records(db,'SELECT m.*, p.company FROM messages m JOIN prospects p ON p.id=m.prospect_id ORDER BY m.created DESC')
                 counts = dict(db.execute('SELECT kind, COUNT(DISTINCT message_id) FROM events GROUP BY kind').fetchall())
             sent = sum(m['status']=='Envoyé' for m in messages)
-            self.reply(dict(prospects=prospects,messages=messages,metrics=dict(sent=sent,opened=counts.get('open',0),clicked=counts.get('click',0),replied=counts.get('reply',0)), integrations={'pagespeed': bool(os.environ.get('PAGESPEED_API_KEY')), 'email':False})); return
+            self.reply(dict(prospects=prospects,messages=messages,duplicate_groups=duplicate_groups(prospects),metrics=dict(sent=sent,opened=counts.get('open',0),clicked=counts.get('click',0),replied=counts.get('reply',0)), integrations={'pagespeed': bool(os.environ.get('PAGESPEED_API_KEY')), 'email':False})); return
         files = {'/':'index.html','/style.css':'style.css','/app.js':'app.js','/dashboard.js':'dashboard.js'}
         if path not in files: self.reply({'error':'Introuvable'},404); return
         file = ROOT/'static'/files[path]
@@ -126,7 +169,10 @@ class Handler(BaseHTTPRequestHandler):
                     id, action = parts[2:]
                     p = db.execute('SELECT * FROM prospects WHERE id=?',(id,)).fetchone()
                     if not p: raise ValueError('Prospect introuvable.')
-                    if action == 'update':
+                    if action == 'delete':
+                        if data.get('confirm') != id: raise ValueError('Confirmation de suppression requise.')
+                        delete_contact(db,id)
+                    elif action == 'update':
                         save_contact(db, data, id)
                     elif action == 'status':
                         if data.get('status') not in ['Nouveau','Qualifié','Contacté','Gagné','Perdu','Opposition']: raise ValueError('Statut invalide.')
@@ -151,6 +197,7 @@ class Handler(BaseHTTPRequestHandler):
                     else: self.reply({'error':'Action inconnue'},404); return
                     self.reply({'ok':True}); return
             self.reply({'error':'Introuvable'},404)
+        except DuplicateContact as e: self.reply({'error':str(e)},409)
         except (ValueError, subprocess.SubprocessError, FileNotFoundError) as e: self.reply({'error':str(e)},400)
         except Exception: self.reply({'error':'Erreur interne. Consultez la configuration du serveur.'},500)
 
