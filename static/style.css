@@ -15,3 +15,19 @@
 
 
 .entity-filters{display:flex;align-items:end;flex-wrap:wrap;gap:14px;margin:20px 0}.entity-filters label{min-width:140px;margin:0}.entity-filters .badge{margin-bottom:12px}#entity-modal{max-width:980px;width:calc(100% - 32px);max-height:90vh;overflow:auto}.entity-tabs{display:flex;flex-wrap:wrap;gap:8px;border-bottom:1px solid var(--line);padding:20px 0}.entity-tabs [aria-selected=true]{background:var(--primary,#2465cd);color:#fff}.entity-values{display:grid;grid-template-columns:1fr 1fr;gap:16px}.entity-values>div{border-bottom:1px solid var(--line);padding:8px 0}.entity-values dt{font-size:11px;color:var(--muted)}.entity-values dd{margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}.entity-error{color:#bf2947}#entity-modal pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto}#entity-modal .actions{position:sticky;bottom:0;background:var(--panel,#fff);padding:16px 0;border-top:1px solid var(--line);margin-top:20px}#entity-modal input[type=checkbox]{width:20px;height:20px}#entity-modal [hidden]{display:none}@media(max-width:650px){.entity-values{grid-template-columns:1fr}.entity-filters label{width:100%}.entity-tabs button{flex:1 1 40%}}
+
+
+/* Official Omni Digital artwork, preserved without recolouring or cropping. */
+aside{overflow-y:auto}
+.brand{min-height:168px;flex-shrink:0;padding:10px;background:#f6f6f6;border:1px solid #ffffff24;border-radius:16px;box-shadow:0 10px 28px #00000018}
+.brand:before{content:none}
+.brand-logo{display:block;width:148px;max-width:100%;height:auto;aspect-ratio:1;object-fit:contain}
+.brand-caption{font-size:9px;letter-spacing:1.1px;margin:14px 0 23px;text-transform:uppercase;color:#b7c4d5}
+.welcome-banner{background:radial-gradient(ellipse at 100% 0%,#2f5b6660,transparent 58%),linear-gradient(115deg,#111c2d,#20324b);border:1px solid #ffffff12;box-shadow:0 8px 24px #10243a0a;gap:24px;padding:22px 26px}
+.welcome-logo{display:flex;flex:0 0 112px;width:112px;min-width:112px;min-height:112px;padding:6px;border-radius:14px;background:#f6f6f6;border:1px solid #ffffff30;overflow:hidden;box-shadow:0 5px 18px #00000014}
+.welcome-logo img{display:block;width:100%;height:auto;aspect-ratio:1;object-fit:contain}
+.welcome-copy h2{letter-spacing:-.45px}
+.welcome-copy p{color:#c6d3e3}
+.welcome-actions .banner-primary{background:#f7f9fb;color:#192c43;border-color:#f7f9fb}
+@media(max-width:1050px){.brand-logo{width:140px}.welcome-logo{flex-basis:100px;width:100px;min-width:100px;min-height:100px}.welcome-banner{gap:18px;padding:20px}}
+@media(max-width:700px){.brand{min-height:116px;padding:6px}.brand-logo{width:104px}.welcome-logo{display:none}.welcome-banner{padding:22px;border-radius:14px}}
