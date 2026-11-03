@@ -19,3 +19,16 @@ test('channel opposition cannot be bypassed by editing coordinates or using lega
 test('existing SQLite is backed up before the first schema extension',async t=>{const {DatabaseSync}=await import('node:sqlite');const {readdirSync}=await import('node:fs');const dir=mkdtempSync(join(tmpdir(),'backup-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));const file=join(dir,'crm.sqlite3');const before=new DatabaseSync(file);before.exec("CREATE TABLE prospects(id TEXT PRIMARY KEY,company TEXT NOT NULL,email TEXT,website TEXT,status TEXT NOT NULL DEFAULT 'Nouveau',notes TEXT DEFAULT '',pdf_text TEXT DEFAULT '',audit TEXT DEFAULT '{}',created TEXT NOT NULL); INSERT INTO prospects(id,company,created) VALUES('known','Données présentes','2026-01-01');");before.close();const current=openDatabase(file);current.close();const backups=readdirSync(dir).filter(f=>f.includes('.before-companies-'));assert.equal(backups.length,1);const saved=new DatabaseSync(join(dir,backups[0]),{readOnly:true});assert.equal(saved.prepare('SELECT company FROM prospects').get().company,'Données présentes');assert.equal(saved.prepare("SELECT 1 FROM sqlite_master WHERE name='companies'").get(),undefined);saved.close();const reopened=openDatabase(file);reopened.close();assert.equal(readdirSync(dir).filter(f=>f.includes('.before-companies-')).length,1)});
 
 test('one structured contact opposition does not suppress every contact in the company',async t=>{const {request}=await fixture(t);const cid=await company(request),a=await contact(request,cid);await request(`/api/contacts/${a.id}/update`,{contact_status:'Opposition',opt_out_reason:'Refus de cet interlocuteur uniquement.'});const b=await contact(request,cid,'collegue@example.fr');assert.equal((await request(`/api/prospects/${b.prospect_id}/draft`,{})).status,200);assert.equal((await request('/api/contacts',{company_id:cid,email:'paulo@example.fr'})).status,409)});
+
+test('opposition saves without a separately entered reason and remains enforceable after reload',async t=>{
+ const {request}=await fixture(t);const cid=await company(request);
+ let index=0;for(const input of [{email_opt_out:true},{phone_opt_out:true},{contact_status:'Opposition'}]){
+  const c=await contact(request,cid,`opposition-${index++}@example.fr`);
+  const saved=await request(`/api/contacts/${c.id}/update`,input);
+  assert.equal(saved.status,200,JSON.stringify(saved.data));
+  const row=(await request(`/api/contacts/${c.id}`)).data;
+  assert.ok(row.opt_out_at);assert.ok(row.opt_out_reason);
+  if(input.email_opt_out||input.contact_status)assert.equal((await request(`/api/prospects/${c.prospect_id}/draft`,{})).status,400);
+  assert.equal((await request(`/api/contacts/${c.id}/update`,{job_title:'Gérant'})).status,200);
+ }
+});

@@ -61,7 +61,7 @@ Pour revenir en arrière : arrêter CRM2, conserver séparément la base courant
 ## Vérifications réalisées
 
 - Base de référence : 29 tests Node réussis avant modification.
-- Version livrée : npm run build réussi et 39 tests Node réussis (29 existants + 10 nouveaux).
+- Version livrée : npm run build réussi et 40 tests Node réussis (29 existants + 11 nouveaux).
 - Parcours DOM avec jsdom : création d’entreprise, ajout d’un contact depuis sa fiche, affichage des six sections du contact ; aucune erreur JavaScript remontée. Ce contrôle ne mesure pas le rendu visuel.
 - Tests SQLite : association obligatoire, clés étrangères, conservation des audits, initialisation répétable et sauvegarde avant extension vérifiées.
 - Aucune vérification SMTP/IMAP réelle, aucun déploiement et aucune inspection de base Hostinger.
@@ -73,3 +73,7 @@ Pas de migration de l’ancien CRM, pas de suppression ou de transfert de contac
 Le contrôle visuel réel dans Chromium reste à effectuer : le navigateur n’était pas installé et le téléchargement a renvoyé une archive invalide dans l’environnement. Les contrôles syntaxiques et tests API ne remplacent pas une validation visuelle mobile et desktop.
 
 Prochaine étape : validation visuelle avec Paulo, puis unification du dashboard et de l’import PDF autour des entités structurées, gestion documentée des suppressions/nouveaux accords, et seulement ensuite moteurs de prospection assistée. Ne pas fusionner ou publier automatiquement.
+
+## Correction : enregistrement des oppositions
+
+La saisie du motif détaillé ne bloque plus la sauvegarde d’une opposition email, téléphone ou globale. Si le champ est vide, une note factuelle indique que le motif détaillé est non renseigné ; aucune preuve client n’est inventée. La date est conservée et les protections restent actives. Le formulaire précise ce comportement et place le focus sur les erreurs de sauvegarde. Un test de régression reproduit les trois cas sans motif, recharge les fiches et vérifie le blocage des brouillons email.
