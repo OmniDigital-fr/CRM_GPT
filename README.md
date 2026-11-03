@@ -120,3 +120,10 @@ Intégration disponible pour `contact@omnidigital.fr` : voir la section Messager
 Après configuration, un mail approuvé peut être envoyé uniquement via le bouton **Envoyer maintenant** avec confirmation individuelle. L’envoi et les doubles clics sont protégés par une prise en charge atomique dans SQLite ; un résultat SMTP incertain nécessite une vérification humaine et n’est jamais retenté automatiquement. Les réponses liées aux envois SMTP du CRM sont relevées toutes les 60 secondes et mettent les séquences en pause. La classification reste fondée sur des règles, à vérifier, et ne constitue pas une analyse IA. Les citations d’anciens messages sont retirées avant classification.
 
 Le contexte interne (notes, PDF, réponse client et objections) est présenté séparément du texte à envoyer. Les anciens brouillons comportant des notes internes doivent être modifiés et approuvés à nouveau. Les indicateurs d’envoi incluent désormais les envois acceptés par SMTP ainsi que les envois manuels déclarés. Les ouvertures/clics restent non mesurés. Les sections précédentes décrivant une messagerie non connectée s’appliquent lorsque la configuration manque.
+
+
+## Entreprises et contacts structurés (branche de développement)
+
+Les menus **Entreprises** et **Contacts** séparent les sociétés de leurs interlocuteurs. Une société peut avoir plusieurs contacts ou aucun. Les dossiers historiques restent disponibles dans **Dossiers & outils** ; les contacts structurés y disposent de projections pour réutiliser audits, messages et historique. Modifier leurs coordonnées depuis les nouvelles fiches. Aucune migration depuis crm.omnidigital.fr et aucune suppression de données existantes.
+
+Voir [DEVELOPMENT.md](DEVELOPMENT.md) pour l’architecture, les validations, les limites, la sauvegarde automatique avant extension d’une base existante et le retour arrière. Cette version nécessite encore validation avant toute fusion dans main ou publication Hostinger.

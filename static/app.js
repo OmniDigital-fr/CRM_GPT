@@ -5,18 +5,20 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,data,raw=false){const r=await fetch(path,data===undefined?{}:{method:'POST',headers:{'Content-Type':raw?'application/pdf':'application/json'},body:raw?data:JSON.stringify(data)});const v=await r.json();if(!r.ok)throw Error(v.error);return v}
 function notice(s){$('#notice').textContent=s}
-async function refresh(){state=await api('/api/state');render()}
+async function refresh(){const [legacy,companies,contacts,entityMeta]=await Promise.all([api('/api/state'),api('/api/companies'),api('/api/contacts'),api('/api/entities/meta')]);state={...legacy,...companies,...contacts,entityMeta};render()}
 function metric(label,n,detail){return `<article class="metric"><span class="label">${label}</span><strong>${n}</strong><small>${detail}</small></article>`}
 function duplicateIds(){return new Set((state.duplicate_groups||[]).flatMap(g=>g.ids))}
 function table(items=state.prospects){const q=($('#search').value||'').toLocaleLowerCase('fr');items=items.filter(p=>[p.company,p.contact_name,p.email,p.phone,p.city].some(v=>String(v||'').toLocaleLowerCase('fr').includes(q)));return items.length?`<div class="table-wrap"><table><thead><tr><th>ENTREPRISE</th><th>CONTACT</th><th>STATUT</th><th>DOSSIER & ANALYSE</th><th>ACTIONS</th></tr></thead><tbody>${items.map(p=>{let audit=JSON.parse(p.audit);return `<tr><td><b>${esc(p.company)}</b> ${contactBlocked(p)?'<span class="blocked-badge">Ne pas contacter</span>':''} ${duplicateIds().has(p.id)?'<span class="duplicate-badge">Doublon à vérifier</span>':''}<br><span class="muted">${esc(p.email||'Email non renseigné')}</span><br><span class="muted">${esc(p.website)}</span><br><span class="muted">${esc([p.city,p.industry].filter(Boolean).join(' · '))}</span></td><td>${esc(p.contact_name||'À renseigner')}<br><span class="muted">${esc(p.phone||p.mobile||'')}</span><br><span class="muted">${p.priority?'Priorité : '+esc(p.priority):''}${p.next_followup?' · Relance : '+esc(p.next_followup):''}</span></td><td><select data-status="${p.id}" aria-label="Statut de ${esc(p.company)}">${CONTACT_STATUSES.map(x=>`<option ${p.status===x?'selected':''}>${x}</option>`).join('')}</select></td><td><span class="muted">${p.pdf_text?'PDF importé · '+p.pdf_text.length+' caractères':'Aucun PDF'}</span><br><span class="muted">${audit.scores?esc(Object.entries(audit.scores).map(([k,v])=>`${k}: ${v}/100`).join(' · ')):'Aucun audit Google'}</span></td><td><button data-edit="${p.id}">Voir / modifier</button><button data-history="${p.id}">Historique</button><button class="danger-button" data-delete="${p.id}">Supprimer</button><button data-pdf="${p.id}">Importer PDF</button><button data-audit="${p.id}">Audit du site</button><button data-reply-contact="${p.id}">Regist. réponse</button><button data-action="draft" data-id="${p.id}" ${contactBlocked(p)||p.do_not_email==='Oui'?'disabled title="Prospection bloquée pour ce contact"':''}>Préparer un email</button></td></tr>`}).join('')}</tbody></table></div>`:'<div class="empty">Votre prochain client commence ici.<br>Ajoutez un prospect pour constituer son dossier.</div>'}
 function render(){
- const titles={dashboard:'Dashboard',prospects:'Contacts',research:'Prospection',audits:'Audit du site',followups:'Relances',campaigns:'Emails',sequences:'Séquences',templates:'Modèles',integrations:'Automatisation & intégrations'};
+ const titles={companies:'Entreprises',contacts:'Contacts',dashboard:'Dashboard',prospects:'Dossiers & outils',research:'Prospection',audits:'Audit du site',followups:'Relances',campaigns:'Emails',sequences:'Séquences',templates:'Modèles',integrations:'Automatisation & intégrations'};
  $('#title').textContent=titles[view]||'Dashboard';
  $('#subtitle').textContent=new Intl.DateTimeFormat('fr-FR',{weekday:'long',day:'numeric',month:'long',timeZone:'Europe/Paris'}).format(new Date());
  document.querySelectorAll('nav [data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
  $('#followup-count').textContent=dueContacts().length+dueSequenceMessages().length;
  $('#workspace-context').textContent=view==='dashboard'?'Votre activité en un coup d’œil':view==='prospects'?`${state.prospects.length} contacts dans votre portefeuille`:'Votre espace de développement commercial';
+ $('#add').textContent=view==='companies'?'+ Nouvelle entreprise':'+ Nouveau contact';
  let html='';
+ if(view==='companies'||view==='contacts')html=entityRender();
  if(view==='dashboard')html=dashboard();
  if(view==='audits')html=auditWorkspace();
  if(view==='prospects')html=`<div class="panel"><div class="panel-heading"><h2>Votre carnet de contacts</h2><span class="badge">${state.prospects.length} contacts</span></div>${duplicateIds().size?`<p class="duplicate-warning">${duplicateIds().size} fiches présentent un nom d’entreprise ou un email identique. Elles sont signalées ci-dessous ; aucune suppression automatique.</p>`:''}${table()}</div>`;
@@ -30,6 +32,8 @@ function render(){
  const status=document.querySelector('.aside-bottom small');if(status)status.textContent=state.integrations.email?'Messagerie configurée · envoi sur confirmation':'Messagerie non configurée';
 }
 document.querySelectorAll('nav [data-view]').forEach(b=>b.onclick=()=>{view=b.dataset.view;notice('');if(view==='audits'){openAudit(auditContactId||state.prospects[0]?.id);return}render()});function openContact(prospect=null){
+ const structured=prospect&&(state.contacts||[]).find(c=>c.prospect_id===prospect.id);if(structured){entityEdit('contacts',structured.id).catch(e=>notice(e.message));return}
+
  editingId=prospect?.id||null;$('#contact-error').textContent='';
  const form=$('#create');form.reset();
  if(prospect)for(const [key,value] of Object.entries(prospect)){const field=form.elements.namedItem(key);if(field){if(field.tagName==='SELECT'&&![...field.options].some(o=>o.value===(value??'')))continue;field.value=value??''}}
@@ -43,7 +47,7 @@ document.querySelectorAll('nav [data-view]').forEach(b=>b.onclick=()=>{view=b.da
  }).catch(e=>{$('#contact-history-list').textContent=e.message});
  $('#modal').showModal();
 }
-$('#add').onclick=()=>openContact();$('#cancel').onclick=()=>$('#modal').close();$('#create').onsubmit=async e=>{e.preventDefault();try{await api(editingId?`/api/prospects/${editingId}/update`:'/api/prospects',{...Object.fromEntries(new FormData(e.target)),country:editingId?(state.prospects.find(p=>p.id===editingId)?.country||''):''});e.target.reset();$('#modal').close();await refresh();notice('Prospect enregistré.')}catch(e){$('#contact-error').textContent=e.message}};
+$('#add').onclick=()=>entityEdit(view==='companies'?'companies':'contacts');$('#cancel').onclick=()=>$('#modal').close();$('#create').onsubmit=async e=>{e.preventDefault();try{await api(editingId?`/api/prospects/${editingId}/update`:'/api/prospects',{...Object.fromEntries(new FormData(e.target)),country:editingId?(state.prospects.find(p=>p.id===editingId)?.country||''):''});e.target.reset();$('#modal').close();await refresh();notice('Prospect enregistré.')}catch(e){$('#contact-error').textContent=e.message}};
 $('#content').addEventListener('change',async e=>{if(e.target.dataset.status){try{await api(`/api/prospects/${e.target.dataset.status}/status`,{status:e.target.value});await refresh()}catch(e){notice(e.message);await refresh()}}});
 $('#content').addEventListener('click',async e=>{let b=e.target.closest('button');if(!b)return;try{if(b.dataset.history){openContact(state.prospects.find(p=>p.id===b.dataset.history));$('#contact-history').open=true;$('#contact-history').scrollIntoView({block:'start'});return}if(b.dataset.audit){await openAudit(b.dataset.audit);return}if(b.dataset.delete){await requestDelete(b.dataset.delete);return}if(b.dataset.go){view=b.dataset.go;render();return}if(b.dataset.chart){chartMode=b.dataset.chart;render();return}if(b.dataset.edit){openContact(state.prospects.find(p=>p.id===b.dataset.edit));return}if(b.dataset.action){b.disabled=true;notice(b.dataset.action==='audit'?'Analyse Google en cours…':'Préparation du brouillon…');await api(`/api/prospects/${b.dataset.id}/${b.dataset.action}`,{});if(b.dataset.action==='draft')view='campaigns';await refresh();notice('Opération terminée.')}if(b.dataset.pdf){let input=document.createElement('input');input.type='file';input.accept='application/pdf';input.onchange=async()=>{if(!input.files[0])return;try{await api(`/api/prospects/${b.dataset.pdf}/pdf`,input.files[0],true);await refresh();notice('Texte du PDF ajouté au dossier.')}catch(e){notice(e.message)}};input.click()}if(b.dataset.copy){await navigator.clipboard.writeText(state.messages.find(x=>x.id===b.dataset.copy).body);notice('Texte copié.')}}catch(e){notice(e.message)}finally{b.disabled=false}});refresh().catch(e=>notice(e.message));
 
@@ -61,7 +65,7 @@ $('#import-pdf').onclick=()=>{
  };input.click();
 };
 
-$('#search').addEventListener('input',()=>{if($('#search').value.trim())view='prospects';render()});
+$('#search').addEventListener('input',()=>{if(!['companies','contacts','research'].includes(view)&&$('#search').value.trim())view='contacts';render()});
 try{document.documentElement.dataset.theme=localStorage.getItem('omni-theme')||'light'}catch(e){}
 function updateThemeLabel(){const dark=document.documentElement.dataset.theme==='dark';$('#theme-toggle').textContent=dark?'☀':'☾';$('#theme-toggle').setAttribute('aria-label',dark?'Activer le thème clair':'Activer le thème sombre')}
 updateThemeLabel();
@@ -106,3 +110,4 @@ $('#reconsent-confirm').onclick=async()=>{
  const button=$('#reconsent-confirm');button.disabled=true;
  try{await api(`/api/prospects/${editingId}/reconsent`,{confirm:editingId,evidence:$('#reconsent-evidence').value});$('#reconsent-modal').close();$('#modal').close();await refresh();openContact(state.prospects.find(p=>p.id===editingId));notice('Nouvel accord enregistré. Aucune relance programmée.')}catch(e){$('#reconsent-error').textContent=e.message}finally{button.disabled=false}
 };
+
