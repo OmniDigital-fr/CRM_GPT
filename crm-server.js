@@ -300,7 +300,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     });
     res.json({ok:true});
   });
-  for (const [route,file] of Object.entries({'/':'index.html','/app.js':'app.js','/dashboard.js':'dashboard.js','/audit.js':'audit.js','/outreach-ui.js':'outreach-ui.js','/style.css':'style.css','/entities-ui.js':'entities-ui.js'})) app.get(route,(req,res)=>res.sendFile(resolve(ROOT,'static',file)));
+  for (const [route,file] of Object.entries({'/':'index.html','/app.js':'app.js','/dashboard.js':'dashboard.js','/audit.js':'audit.js','/outreach-ui.js':'outreach-ui.js','/style.css':'style.css','/entities-ui.js':'entities-ui.js','/omni-digital-logo.png':'omni-digital-logo.png'})) app.get(route,(req,res)=>res.sendFile(resolve(ROOT,'static',file)));
   app.use((req,res)=>res.status(404).json({error:'Introuvable'}));
   app.use((error,req,res,next)=>{
     const status=error.status || (error.type==='entity.too.large'?413:500);
