@@ -1,3 +1,4 @@
+import {initCommercial,mountCommercial,CommercialError} from './commercial.js';
 import {initEntities,mountEntities,EntityError,restrictedIdentity} from './entities.js';
 import {MailService,readMailConfig,initMail} from './mail-service.js';
 import {initOutreach,createSequence,registerReply,messageAction,stopOutreach} from './outreach.js';
@@ -40,8 +41,8 @@ export function validateConfig(env = process.env) {
 
 export function openDatabase(filename) {
   const db = new DatabaseSync(filename);
-  if(filename!==':memory:' && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prospects'").get() && !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='companies'").get()) {
-    const backup=filename+'.before-companies-'+Date.now()+'-'+randomUUID()+'.sqlite3';
+  if(filename!==':memory:' && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prospects'").get() && (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='companies'").get() || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='opportunities'").get())) {
+    const backup=filename+(db.prepare("SELECT 1 FROM sqlite_master WHERE name='companies'").get()?'.before-commercial-':'.before-companies-')+Date.now()+'-'+randomUUID()+'.sqlite3';
     db.exec("VACUUM INTO '"+backup.replaceAll("'","''")+"'");
     chmodSync(backup,0o600);
   }
@@ -57,6 +58,7 @@ export function openDatabase(filename) {
   initMail(db);
   initPolicy(db);
   initEntities(db);
+  initCommercial(db);
   return db;
 }
 function transaction(db, fn) {
@@ -212,6 +214,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
   app.use(express.json({limit:'1mb'}));
   app.use(express.raw({type:'application/pdf',limit:'12mb'}));
   mountEntities(app,db,{config,fetcher,inspect});
+  mountCommercial(app,db);
   app.get('/api/state',(req,res)=>{
     const prospects=db.prepare('SELECT * FROM prospects ORDER BY created DESC').all();
     const messages=db.prepare('SELECT m.*,p.company FROM messages m JOIN prospects p ON p.id=m.prospect_id ORDER BY m.created DESC').all();
@@ -300,11 +303,11 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     });
     res.json({ok:true});
   });
-  for (const [route,file] of Object.entries({'/':'index.html','/app.js':'app.js','/dashboard.js':'dashboard.js','/audit.js':'audit.js','/outreach-ui.js':'outreach-ui.js','/style.css':'style.css','/entities-ui.js':'entities-ui.js','/omni-digital-logo.png':'omni-digital-logo.png'})) app.get(route,(req,res)=>res.sendFile(resolve(ROOT,'static',file)));
+  for (const [route,file] of Object.entries({'/':'index.html','/app.js':'app.js','/dashboard.js':'dashboard.js','/audit.js':'audit.js','/outreach-ui.js':'outreach-ui.js','/style.css':'style.css','/entities-ui.js':'entities-ui.js','/omni-digital-logo.png':'omni-digital-logo.png','/commercial-ui.js':'commercial-ui.js'})) app.get(route,(req,res)=>res.sendFile(resolve(ROOT,'static',file)));
   app.use((req,res)=>res.status(404).json({error:'Introuvable'}));
   app.use((error,req,res,next)=>{
     const status=error.status || (error.type==='entity.too.large'?413:500);
-    res.status(status).json({error:(error instanceof EntityError || error instanceof InputError || error instanceof AuditError || error instanceof PolicyError)?error.message:status===413?'Fichier trop volumineux.':status===400?'Requête invalide.':'Erreur interne. Consultez la configuration du serveur.'});
+    res.status(status).json({error:(error instanceof CommercialError || error instanceof EntityError || error instanceof InputError || error instanceof AuditError || error instanceof PolicyError)?error.message:status===413?'Fichier trop volumineux.':status===400?'Requête invalide.':'Erreur interne. Consultez la configuration du serveur.'});
   });
   return app;
 }
