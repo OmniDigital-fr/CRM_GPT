@@ -69,7 +69,7 @@ export function restrictedIdentity(db,p,exclude=''){
  const email=String(p.email||'').trim().toLowerCase(),phones=[p.phone,p.mobile].map(v=>String(v||'').replace(/\D/g,'')).filter(Boolean);
  return db.prepare('SELECT * FROM contacts WHERE id<>? AND (email_opt_out=1 OR phone_opt_out=1)').all(exclude).some(c=>(c.email_opt_out&&email&&c.email.toLowerCase()===email)||(c.phone_opt_out&&[c.phone,c.mobile].some(v=>phones.includes(String(v||'').replace(/\D/g,'')))));
 }
-export function mountEntities(app,db,{config,fetcher,inspect}){
+export function mountEntities(app,db,{config,fetcher,inspect,consumePsi,legacyAudit=fn=>fn()}){
  app.get('/api/entities/meta',(req,res)=>res.json({company_fields:COMPANY_FIELDS,contact_fields:CONTACT_FIELDS,choices:CHOICES}));
  app.get('/api/companies',(req,res)=>{
   const q=String(req.query.q||'').toLowerCase();let rows=db.prepare('SELECT c.*,(SELECT COUNT(*) FROM contacts x WHERE x.company_id=c.id) AS contact_count FROM companies c').all().filter(c=>[c.name,c.siren,c.city,c.industry,c.website].some(v=>v.toLowerCase().includes(q))&&(!req.query.status||c.business_status===req.query.status)&&(!req.query.priority||c.priority===req.query.priority));
@@ -80,7 +80,7 @@ export function mountEntities(app,db,{config,fetcher,inspect}){
  app.get('/api/companies/:id',(req,res)=>{const c=get(db,'companies',req.params.id);res.json({...c,...relatedCommercial(db,{company_id:c.id}),contacts:db.prepare('SELECT * FROM contacts WHERE company_id=?').all(c.id),audits:db.prepare('SELECT * FROM audits WHERE company_id=? ORDER BY created_at DESC').all(c.id),interactions:db.prepare('SELECT * FROM interactions WHERE company_id=? ORDER BY created_at DESC,rowid DESC').all(c.id),possible_duplicates:possible(db,c,c.id)})});
  app.post('/api/companies/:id/audit',async(req,res)=>{
   const c=get(db,'companies',req.params.id);if(!c.website)throw new EntityError('Renseignez le site de l’entreprise.');
-  const audit=await auditWebsite(c.website,{pagespeedKey:config.pagespeedKey,fetcher,inspect});
+  const audit=await legacyAudit(()=>auditWebsite(c.website,{pagespeedKey:config.pagespeedKey,fetcher,inspect,consumePsi}));
   tx(db,()=>{get(db,'companies',c.id);db.prepare('INSERT INTO audits VALUES(?,?,?,?,?,?)').run(id(),c.id,null,JSON.stringify(audit),'Contrôle automatisé',now());db.prepare("UPDATE companies SET audit_status='Réalisé',last_audit_at=?,audit_summary=?,updated_at=? WHERE id=?").run(now(),(audit.conclusions||[]).join('\n'),now(),c.id);for(const contact of db.prepare('SELECT prospect_id FROM contacts WHERE company_id=?').all(c.id))db.prepare('UPDATE prospects SET audit=? WHERE id=?').run(JSON.stringify(audit),contact.prospect_id);log(db,c.id,null,'Audit enregistré','Contrôle automatisé, à interpréter.')});res.json({audit});
  });
  app.get('/api/contacts',(req,res)=>{

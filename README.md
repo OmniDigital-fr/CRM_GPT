@@ -133,3 +133,9 @@ Voir [DEVELOPMENT.md](DEVELOPMENT.md) pour l’architecture, les validations, le
 La branche `feature/commercial-pipeline` ajoute **Opportunités** (Kanban/liste), **Tâches** et un dashboard commercial, sans modifier le CRM ancien. Les fiches société/contact ont un onglet Suivi commercial. Les prévisions sont distinguées des contrats gagnés ; aucun état ou tâche ne constitue une preuve implicite d’envoi ou de réunion. Les modules email/audits existants restent accessibles.
 
 Voir [COMMERCIAL_PIPELINE.md](COMMERCIAL_PIPELINE.md) pour le schéma, les règles, les indicateurs, les APIs, l’installation, les tests, les limites et la restauration de sauvegarde. Aucun merge ou déploiement sans validation explicite.
+
+## Phase 3 — moteur d’audit digital (branche de développement)
+
+La branche `feature/digital-audit-engine` ajoute un menu **Audit digital** rattaché aux entreprises, une file d’exécution, des contrôles documentés, Google PageSpeed mobile et desktop lorsque la clé existe, un historique, une comparaison et deux exports PDF réels. Les anciens audits restent consultables. Aucun email ni opportunité n’est créé automatiquement.
+
+Voir [DIGITAL_AUDIT_ENGINE.md](DIGITAL_AUDIT_ENGINE.md) pour l’architecture réutilisée, les mesures, la méthodologie, les limites, les APIs, les tests, l’installation et les sauvegardes. La publication reste soumise à validation.

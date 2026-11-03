@@ -7,6 +7,7 @@ import {load} from 'cheerio';
 
 export class AuditError extends Error { constructor(message,status=400){super(message);this.status=status} }
 export function siteUrl(value){
+  if(String(value||'').length>2048)throw new AuditError('URL trop longue (2048 caractères maximum).');
   let url;
   try{url=new URL(String(value||'').trim())}catch{throw new AuditError('Indiquez une URL complète, par exemple https://example.fr.')}
   if(!['http:','https:'].includes(url.protocol)||url.username||url.password||(url.port&&!['80','443'].includes(url.port)))throw new AuditError('Utilisez un site public HTTP/HTTPS sans identifiants ni port personnalisé.');
@@ -23,7 +24,10 @@ export async function resolvePublic(hostname,resolver=lookup){
   return addresses[0];
 }
 async function requestPage(url,deadline){
-  const address=await resolvePublic(url.hostname);
+  const remainingDns=deadline-Date.now();
+  if(remainingDns<=0)throw new AuditError('Délai global de lecture dépassé.');
+  let dnsTimer;
+  const address=await Promise.race([resolvePublic(url.hostname),new Promise((resolve,reject)=>{dnsTimer=setTimeout(()=>reject(new AuditError('Résolution DNS trop lente.')),remainingDns)})]).finally(()=>clearTimeout(dnsTimer));
   return new Promise((resolve,reject)=>{
     const start=performance.now(),remaining=deadline-Date.now();
     if(remaining<=0)return reject(new AuditError('Le site met trop de temps à répondre.'));
@@ -35,11 +39,11 @@ async function requestPage(url,deadline){
       const status=res.statusCode,headers=res.headers,ttfbMs=Math.round(performance.now()-start);
       const peer=url.protocol==='https:'?res.socket.getPeerCertificate?.():null;
       const certificate=peer?.valid_to?{validTo:new Date(peer.valid_to).toISOString(),daysRemaining:Math.floor((Date.parse(peer.valid_to)-Date.now())/86400000)}:null;
-      if(status>=300&&status<400&&headers.location){res.destroy();resolve({redirect:headers.location});return}
+      if(status>=300&&status<400&&headers.location){res.destroy();resolve({redirect:headers.location,status,url:url.href});return}
       if(headers['content-encoding']&&headers['content-encoding']!=='identity'){res.destroy();reject(new AuditError('Le site impose une réponse compressée non analysable.'));return}
       let size=0;const chunks=[];
       res.on('data',chunk=>{size+=chunk.length;if(size>2*1024*1024){res.destroy();reject(new AuditError('La page dépasse la limite de lecture de 2 Mo.'))}else chunks.push(chunk)});
-      res.on('end',()=>resolve({url:url.href,status,ttfbMs,bytes:size,certificate,html:Buffer.concat(chunks).toString('utf8'),contentType:headers['content-type']||''}));
+      res.on('end',()=>resolve({url:url.href,status,ttfbMs,bytes:size,certificate,html:Buffer.concat(chunks).toString('utf8'),contentType:headers['content-type']||'',headers:Object.fromEntries(['strict-transport-security','content-security-policy','x-content-type-options','x-frame-options','referrer-policy','permissions-policy','x-robots-tag'].filter(k=>headers[k]).map(k=>[k,String(headers[k]).slice(0,4000)])),dns:{resolved:true,address:address.address}}));
       res.on('error',()=>reject(new AuditError('Lecture de la page interrompue.')));
     });
     const timer=setTimeout(()=>req.destroy(new Error('timeout')),remaining);
@@ -47,12 +51,13 @@ async function requestPage(url,deadline){
     req.on('error',()=>reject(new AuditError('Impossible de joindre le site : délai dépassé, accès réseau ou certificat TLS à vérifier.')));
   });
 }
-export async function inspectWebsite(value){
-  let url=siteUrl(value);const deadline=Date.now()+18000;
+export async function inspectWebsite(value,{deadline=Date.now()+18000,budget,request=requestPage}={}){
+  let url=siteUrl(value);const redirects=[];
   for(let i=0;i<5;i++){
-    const page=await requestPage(url,deadline);
-    if(!page.redirect)return page;
-    try{url=siteUrl(new URL(page.redirect,url).href)}catch{throw new AuditError('Redirection vers une adresse invalide ou non autorisée.')}
+    if(budget){if(budget.remaining<=0)throw new AuditError('Limite de requêtes atteinte.');budget.remaining--}
+    const page=await request(url,deadline);
+    if(!page.redirect)return {...page,redirects};
+    let next;try{next=siteUrl(new URL(page.redirect,url).href);redirects.push({from:url.href,to:next.href,status:page.status||null});url=next}catch{throw new AuditError('Redirection vers une adresse invalide ou non autorisée.')}
   }
   throw new AuditError('Trop de redirections pour analyser ce site.');
 }
@@ -103,11 +108,13 @@ export function analyzePage(page){
   if(!page.url.startsWith('https:'))argue('Sécuriser la connexion du site','HTTPS / maintenance','Haute','Mettre en place une connexion HTTPS et une redirection adaptée.','La page finale a été servie en HTTP.');
   return {checks,arguments:argumentsList};
 }
-export async function auditWebsite(value,{pagespeedKey='',fetcher=fetch,inspect=inspectWebsite}={}){
+export async function auditWebsite(value,{pagespeedKey='',fetcher=fetch,inspect=inspectWebsite,consumePsi=()=>true}={}){
   const requested=siteUrl(value).href;
   const page=await inspect(requested),analysis=analyzePage(page);
   const result={...analysis,url:page.url,requestedUrl:requested,date:new Date().toISOString(),strategy:'mobile',scores:{},opportunities:[],pagespeed:{state:'unconfigured',message:'Ajoutez PAGESPEED_API_KEY pour mesurer les performances mobiles avec Google.'}};
-  if(pagespeedKey){
+  const psiAllowed=!pagespeedKey||consumePsi();
+  if(pagespeedKey&&!psiAllowed)result.pagespeed={state:'quota',message:'Budget local PageSpeed atteint ; contrôles HTML conservés.'};
+  if(pagespeedKey&&psiAllowed){
     const query=new URLSearchParams({url:page.url,strategy:'mobile',key:pagespeedKey});
     for(const c of ['performance','seo','accessibility','best-practices'])query.append('category',c);
     try{
