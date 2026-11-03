@@ -127,3 +127,9 @@ Le contexte interne (notes, PDF, réponse client et objections) est présenté s
 Les menus **Entreprises** et **Contacts** séparent les sociétés de leurs interlocuteurs. Une société peut avoir plusieurs contacts ou aucun. Les dossiers historiques restent disponibles dans **Dossiers & outils** ; les contacts structurés y disposent de projections pour réutiliser audits, messages et historique. Modifier leurs coordonnées depuis les nouvelles fiches. Aucune migration depuis crm.omnidigital.fr et aucune suppression de données existantes.
 
 Voir [DEVELOPMENT.md](DEVELOPMENT.md) pour l’architecture, les validations, les limites, la sauvegarde automatique avant extension d’une base existante et le retour arrière. Cette version nécessite encore validation avant toute fusion dans main ou publication Hostinger.
+
+## Phase 2 — pipeline commercial (branche de développement)
+
+La branche `feature/commercial-pipeline` ajoute **Opportunités** (Kanban/liste), **Tâches** et un dashboard commercial, sans modifier le CRM ancien. Les fiches société/contact ont un onglet Suivi commercial. Les prévisions sont distinguées des contrats gagnés ; aucun état ou tâche ne constitue une preuve implicite d’envoi ou de réunion. Les modules email/audits existants restent accessibles.
+
+Voir [COMMERCIAL_PIPELINE.md](COMMERCIAL_PIPELINE.md) pour le schéma, les règles, les indicateurs, les APIs, l’installation, les tests, les limites et la restauration de sauvegarde. Aucun merge ou déploiement sans validation explicite.

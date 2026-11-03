@@ -1,3 +1,4 @@
+import {relatedCommercial} from './commercial.js';
 import {randomUUID} from 'node:crypto';
 import {CONTACT_STATUSES,PolicyError,suppressed,suppress,history} from './contact-policy.js';
 import {stopOutreach} from './outreach.js';
@@ -76,7 +77,7 @@ export function mountEntities(app,db,{config,fetcher,inspect}){
  });
  app.post('/api/companies',(req,res)=>res.status(201).json(tx(db,()=>saveCompany(db,req.body))));
  app.post('/api/companies/:id/update',(req,res)=>res.json(tx(db,()=>saveCompany(db,req.body,req.params.id))));
- app.get('/api/companies/:id',(req,res)=>{const c=get(db,'companies',req.params.id);res.json({...c,contacts:db.prepare('SELECT * FROM contacts WHERE company_id=?').all(c.id),audits:db.prepare('SELECT * FROM audits WHERE company_id=? ORDER BY created_at DESC').all(c.id),interactions:db.prepare('SELECT * FROM interactions WHERE company_id=? ORDER BY created_at DESC,rowid DESC').all(c.id),possible_duplicates:possible(db,c,c.id)})});
+ app.get('/api/companies/:id',(req,res)=>{const c=get(db,'companies',req.params.id);res.json({...c,...relatedCommercial(db,{company_id:c.id}),contacts:db.prepare('SELECT * FROM contacts WHERE company_id=?').all(c.id),audits:db.prepare('SELECT * FROM audits WHERE company_id=? ORDER BY created_at DESC').all(c.id),interactions:db.prepare('SELECT * FROM interactions WHERE company_id=? ORDER BY created_at DESC,rowid DESC').all(c.id),possible_duplicates:possible(db,c,c.id)})});
  app.post('/api/companies/:id/audit',async(req,res)=>{
   const c=get(db,'companies',req.params.id);if(!c.website)throw new EntityError('Renseignez le site de l’entreprise.');
   const audit=await auditWebsite(c.website,{pagespeedKey:config.pagespeedKey,fetcher,inspect});
@@ -85,7 +86,7 @@ export function mountEntities(app,db,{config,fetcher,inspect}){
  app.get('/api/contacts',(req,res)=>{
   const q=String(req.query.q||'').toLowerCase();const contacts=db.prepare('SELECT c.*,p.name AS company_name FROM contacts c JOIN companies p ON p.id=c.company_id ORDER BY c.display_name,c.created_at').all().filter(c=>[c.display_name,c.email,c.company_name,c.job_title].some(v=>v.toLowerCase().includes(q))&&(!req.query.status||c.contact_status===req.query.status)&&(!req.query.role||c.decision_role===req.query.role)&&(!req.query.opposition||(req.query.opposition==='yes'?c.email_opt_out||c.phone_opt_out||c.contact_status==='Opposition':!c.email_opt_out&&!c.phone_opt_out&&c.contact_status!=='Opposition')));res.json({contacts});
  });
- app.get('/api/contacts/:id',(req,res)=>{const c=get(db,'contacts',req.params.id);res.json({...c,company:get(db,'companies',c.company_id),interactions:db.prepare('SELECT * FROM interactions WHERE contact_id=? ORDER BY created_at DESC,rowid DESC').all(c.id),communications:db.prepare('SELECT id,subject,body,status,created FROM messages WHERE prospect_id=? ORDER BY created DESC').all(c.prospect_id)})});
+ app.get('/api/contacts/:id',(req,res)=>{const c=get(db,'contacts',req.params.id);res.json({...c,...relatedCommercial(db,{contact_id:c.id}),company:get(db,'companies',c.company_id),interactions:db.prepare('SELECT * FROM interactions WHERE contact_id=? ORDER BY created_at DESC,rowid DESC').all(c.id),communications:db.prepare('SELECT id,subject,body,status,created FROM messages WHERE prospect_id=? ORDER BY created DESC').all(c.prospect_id)})});
  app.post('/api/contacts',(req,res)=>res.status(201).json(tx(db,()=>saveEntityContact(db,req.body))));
  app.post('/api/contacts/:id/update',(req,res)=>res.json(tx(db,()=>saveEntityContact(db,req.body,req.params.id))));
  app.post('/api/interactions',(req,res)=>res.status(201).json(tx(db,()=>{const d=req.body;if(!d||typeof d.detail!=='string'||!d.detail.trim()||d.detail.length>20000)throw new EntityError('Décrivez l’interaction.');const c=get(db,'companies',d.company_id);if(d.contact_id&&get(db,'contacts',d.contact_id).company_id!==c.id)throw new EntityError('Contact d’une autre entreprise.');log(db,c.id,d.contact_id||null,'Note de suivi',d.detail.trim());return {ok:true}})));
