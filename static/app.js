@@ -21,7 +21,7 @@ function render(){
  if(view==='companies'||view==='contacts')html=entityRender();
  if(view==='pipeline')html=pipelineWorkspace();
  if(view==='tasks')html=tasksWorkspace();
- if(view==='dashboard')html=commercialDashboard()+`<details class="legacy-dashboard"><summary>Activité des contacts et de la messagerie</summary>${dashboard()}</details>`;
+ if(view==='dashboard')html=`<section aria-labelledby="contact-activity-title"><h2 id="contact-activity-title">Activité des contacts et de la messagerie</h2>${dashboard()}</section>`+commercialDashboard();
  if(view==='digitalAudits')html=digitalAuditWorkspace();
  if(view==='prospects')html=`<div class="panel"><div class="panel-heading"><h2>Votre carnet de contacts</h2><span class="badge">${state.prospects.length} contacts</span></div>${duplicateIds().size?`<p class="duplicate-warning">${duplicateIds().size} fiches présentent un nom d’entreprise ou un email identique. Elles sont signalées ci-dessous ; aucune suppression automatique.</p>`:''}${table()}</div>`;
  if(view==='research')html=`<div class="panel"><div class="panel-heading"><h2>Dossiers & analyses de prospection</h2><span class="badge">PDF · PageSpeed Insights</span></div><p>Retrouvez vos rapports, analysez les sites et préparez votre approche commerciale.</p>${table()}</div>`;
