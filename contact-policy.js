@@ -18,7 +18,8 @@ export function isOpposed(p){return p.status==='Opposition'||p.contact_permissio
 export function history(db,id,kind,detail){db.prepare('INSERT INTO contact_history VALUES(?,?,?,?,?)').run(randomUUID().replaceAll('-',''),id,kind,detail,new Date().toISOString())}
 export function suppress(db,p){
  const date=new Date().toISOString();
- for(const [kind,fingerprint] of identifiers(p))db.prepare('INSERT OR IGNORE INTO contact_suppressions VALUES(?,?,?,?)').run(kind,fingerprint,p.id,date);
+ const structured=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='contacts'").get()&&db.prepare('SELECT 1 FROM contacts WHERE prospect_id=?').get(p.id);
+ for(const [kind,fingerprint] of identifiers(p).filter(([kind])=>!structured||kind!=='company'))db.prepare('INSERT OR IGNORE INTO contact_suppressions VALUES(?,?,?,?)').run(kind,fingerprint,p.id,date);
  db.prepare("UPDATE outreach_sequences SET state='En pause' WHERE prospect_id=? AND state='Active'").run(p.id);
  db.prepare("UPDATE messages SET status='Annulé',approved_at='' WHERE prospect_id=? AND status IN ('Brouillon','Approuvé')").run(p.id);
  db.prepare("UPDATE prospects SET contact_permission='Opposition',status='Opposition',next_followup='',opposition_date=CASE WHEN opposition_date='' THEN ? ELSE opposition_date END WHERE id=?").run(date.slice(0,10),p.id);
@@ -42,3 +43,4 @@ export function reconsent(db,p,evidence){
  db.prepare("UPDATE prospects SET contact_permission='Accord explicite',permission_note=?,opposition_date='',status='À qualifier',next_followup='',response_scenario='',do_not_email='',do_not_call='',do_not_sms='' WHERE id=?").run(evidence,p.id);
  history(db,p.id,'Nouvel accord documenté',evidence);
 }
+

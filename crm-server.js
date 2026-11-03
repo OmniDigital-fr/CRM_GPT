@@ -1,3 +1,4 @@
+import {initEntities,mountEntities,EntityError,restrictedIdentity} from './entities.js';
 import {MailService,readMailConfig,initMail} from './mail-service.js';
 import {initOutreach,createSequence,registerReply,messageAction,stopOutreach} from './outreach.js';
 import {CONTACT_STATUSES,POLICY_FIELDS,PolicyError,initPolicy,checkPolicyValues,isOpposed,suppressed,suppress,history,assertDraftAllowed,reconsent} from './contact-policy.js';
@@ -5,7 +6,7 @@ import {auditWebsite,AuditError,inspectWebsite} from './site-audit.js';
 import express from 'express';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, realpathSync } from 'node:fs';
+import { mkdirSync, realpathSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +40,11 @@ export function validateConfig(env = process.env) {
 
 export function openDatabase(filename) {
   const db = new DatabaseSync(filename);
+  if(filename!==':memory:' && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prospects'").get() && !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='companies'").get()) {
+    const backup=filename+'.before-companies-'+Date.now()+'-'+randomUUID()+'.sqlite3';
+    db.exec("VACUUM INTO '"+backup.replaceAll("'","''")+"'");
+    chmodSync(backup,0o600);
+  }
   db.exec(`PRAGMA busy_timeout=5000;
     CREATE TABLE IF NOT EXISTS prospects(id TEXT PRIMARY KEY, company TEXT NOT NULL, email TEXT, website TEXT, status TEXT NOT NULL DEFAULT 'Nouveau', notes TEXT DEFAULT '', pdf_text TEXT DEFAULT '', audit TEXT DEFAULT '{}', created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, prospect_id TEXT NOT NULL REFERENCES prospects(id), subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Brouillon', created TEXT NOT NULL);
@@ -50,6 +56,7 @@ export function openDatabase(filename) {
   initOutreach(db);
   initMail(db);
   initPolicy(db);
+  initEntities(db);
   return db;
 }
 function transaction(db, fn) {
@@ -80,6 +87,7 @@ function valuesFor(data) {
 function saveContact(db, data, id = null) {
   const values = valuesFor(data);
   const before=id?db.prepare('SELECT * FROM prospects WHERE id=?').get(id):null;
+  if(!before&&restrictedIdentity(db,values))throw new PolicyError('Ces coordonnées font déjà l’objet d’une opposition.',409);
   if(before&&isOpposed(before)&&values.contact_permission!=='Opposition')throw new PolicyError('Opposition active. Utilisez « Nouvel accord documenté » pour modifier cette situation.');
   if((!before||!isOpposed(before))&&suppressed(db,values))throw new PolicyError('Contact en liste d’opposition : création ou réimportation bloquée.',409);
   const existing = matchingContact(db,values.company,values.email,id);
@@ -203,6 +211,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
   });
   app.use(express.json({limit:'1mb'}));
   app.use(express.raw({type:'application/pdf',limit:'12mb'}));
+  mountEntities(app,db,{config,fetcher,inspect});
   app.get('/api/state',(req,res)=>{
     const prospects=db.prepare('SELECT * FROM prospects ORDER BY created DESC').all();
     const messages=db.prepare('SELECT m.*,p.company FROM messages m JOIN prospects p ON p.id=m.prospect_id ORDER BY m.created DESC').all();
@@ -236,6 +245,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     const {id,action}=req.params;
     const p=db.prepare('SELECT * FROM prospects WHERE id=?').get(id);
     if (!p) throw new InputError('Prospect introuvable.',404);
+    if(['update','delete','reconsent'].includes(action)&&db.prepare('SELECT 1 FROM contacts WHERE prospect_id=?').get(id))throw new PolicyError('Utilisez la fiche Contacts structurée. Suppression et levée d’opposition non disponibles dans cette phase.',409);
     if(action==='sequence'){
       const sequenceId=transaction(db,()=>createSequence(db,p,draft));return res.status(201).json({sequenceId});
     }
@@ -290,11 +300,11 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     });
     res.json({ok:true});
   });
-  for (const [route,file] of Object.entries({'/':'index.html','/app.js':'app.js','/dashboard.js':'dashboard.js','/audit.js':'audit.js','/outreach-ui.js':'outreach-ui.js','/style.css':'style.css'})) app.get(route,(req,res)=>res.sendFile(resolve(ROOT,'static',file)));
+  for (const [route,file] of Object.entries({'/':'index.html','/app.js':'app.js','/dashboard.js':'dashboard.js','/audit.js':'audit.js','/outreach-ui.js':'outreach-ui.js','/style.css':'style.css','/entities-ui.js':'entities-ui.js'})) app.get(route,(req,res)=>res.sendFile(resolve(ROOT,'static',file)));
   app.use((req,res)=>res.status(404).json({error:'Introuvable'}));
   app.use((error,req,res,next)=>{
     const status=error.status || (error.type==='entity.too.large'?413:500);
-    res.status(status).json({error:(error instanceof InputError || error instanceof AuditError || error instanceof PolicyError)?error.message:status===413?'Fichier trop volumineux.':status===400?'Requête invalide.':'Erreur interne. Consultez la configuration du serveur.'});
+    res.status(status).json({error:(error instanceof EntityError || error instanceof InputError || error instanceof AuditError || error instanceof PolicyError)?error.message:status===413?'Fichier trop volumineux.':status===400?'Requête invalide.':'Erreur interne. Consultez la configuration du serveur.'});
   });
   return app;
 }
@@ -313,3 +323,4 @@ export function startServer() {
     process.on('SIGTERM',stop);process.on('SIGINT',stop);
   } catch (error) { console.error(error.message);process.exitCode=1; }
 }
+

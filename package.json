@@ -2,7 +2,7 @@
   "name": "omnidigital-crm",
   "version": "1.0.0",
   "private": true,
-  "description": "OmniDigital CRM — contacts, prospection et dashboard",
+  "description": "OmniDigital CRM \u2014 contacts, prospection et dashboard",
   "type": "module",
   "main": "server.js",
   "engines": {
@@ -10,8 +10,8 @@
   },
   "scripts": {
     "start": "node server.js",
-    "build": "node --check server.js && node --check crm-server.js && node --check site-audit.js && node --check contact-policy.js && node --check outreach.js && node --check mail-service.js && node --check static/outreach-ui.js && node --check static/audit.js && node --check static/app.js && node --check static/dashboard.js",
-    "test": "node --test tests/server.test.js"
+    "build": "node --check server.js && node --check crm-server.js && node --check site-audit.js && node --check contact-policy.js && node --check outreach.js && node --check mail-service.js && node --check static/outreach-ui.js && node --check static/audit.js && node --check static/app.js && node --check static/dashboard.js && node --check entities.js && node --check static/entities-ui.js",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "cheerio": "^1.2.0",
