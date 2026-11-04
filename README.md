@@ -147,3 +147,9 @@ les preuves et décisions manuelles, et propose une synthèse Gemini uniquement 
 une demande individuelle payante. Sans clé, les scores locaux restent disponibles.
 Configuration, méthode, budgets, sécurité et limites :
 [AI_LEAD_QUALIFICATION.md](AI_LEAD_QUALIFICATION.md).
+
+### Recherche de prospects
+
+Le guide [Recherche de prospects](PROSPECT_DISCOVERY.md) présente les sources,
+les critères, la vérification des entreprises et le parcours de validation avant
+import dans CRM2.

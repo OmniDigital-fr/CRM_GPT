@@ -40,3 +40,13 @@ aside{overflow-y:auto}
 
 /* Commercial qualification: scoped to company records. */
 .qualification-root{min-width:0}.qualification-root p{line-height:1.65;overflow-wrap:anywhere}.qualification-root details{border:1px solid var(--line);border-radius:10px;padding:14px;margin:12px 0}.qualification-root summary{cursor:pointer;font-weight:600;line-height:1.6}.qualification-scores{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:18px 0}.qualification-score{display:flex;flex-direction:column;gap:10px;border:1px solid var(--line);border-radius:12px;background:var(--input);padding:18px;min-width:0}.qualification-score strong{font-size:26px}.qualification-score span,.qualification-score small{overflow-wrap:anywhere}.qualification-priority{border-left:4px solid #ef8b3d;background:var(--input);padding:16px;display:grid;gap:10px;border-radius:8px}.qualification-form{display:grid;gap:12px;margin:16px 0}.qualification-form button{justify-self:start}.qualification-consent{display:flex!important;flex-direction:row!important;align-items:flex-start;gap:10px;line-height:1.6}.qualification-consent input{width:auto;flex:0 0 auto;margin-top:4px}.qualification-warning{padding:12px;background:var(--input);border-left:3px solid #ef8b3d}.qualification-error{color:#bd3047}.qualification-progress{font-weight:600}.qualification-evidence{padding:14px 0;border-bottom:1px solid var(--line)}.qualification-evidence small{display:block;overflow-wrap:anywhere}.qualification-ai{border:1px solid var(--line);border-radius:12px;padding:16px;margin:14px 0}.qualification-root pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:350px;overflow:auto}.qualification-history-result{padding:6px}.qualification-root table{width:100%}.qualification-root h4{margin:22px 0 10px}.qualification-root li{margin:7px 0;line-height:1.6}.qualification-actions{display:flex;gap:10px;flex-wrap:wrap}@media(max-width:650px){.qualification-scores{grid-template-columns:1fr}.qualification-form button{width:100%}.qualification-root details{padding:10px}.qualification-score{padding:14px}}
+
+/* Recherche de prospects */
+.discovery-workspace .panel{margin-bottom:16px}
+.discovery-workspace details{margin:12px 0}
+.discovery-workspace summary{cursor:pointer}
+.discovery-options,.discovery-actions{display:flex;flex-wrap:wrap;gap:8px 14px;margin:10px 0}
+.discovery-workspace label.discovery-check{display:flex;align-items:center;gap:6px;margin:0}
+.discovery-workspace input[type=checkbox]{width:auto;min-height:0}
+.discovery-record form{margin:14px 0;padding-top:10px;border-top:1px solid var(--line)}
+.discovery-record a,.discovery-workspace td a{overflow-wrap:anywhere}

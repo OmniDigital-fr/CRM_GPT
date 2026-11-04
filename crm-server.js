@@ -1,3 +1,4 @@
+import {initDiscovery, DiscoveryService, mountDiscovery, DiscoveryError} from './prospect-discovery.js';
 import {initQualification,QualificationService,mountQualification,readQualificationConfig,QualificationError} from './qualification.js';
 import {initDigitalAudit,DigitalAuditService,mountDigitalAudit} from './audit-engine-server.js';
 import {initCommercial,mountCommercial,CommercialError} from './commercial.js';
@@ -69,6 +70,7 @@ export function openDatabase(filename) {
   initCommercial(db);
   initDigitalAudit(db);
   initQualification(db);
+  initDiscovery(db);
   return db;
 }
 function transaction(db, fn) {
@@ -232,6 +234,9 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
   mountCommercial(app,db);
   mountDigitalAudit(app,digital);
   mountQualification(app,qualification);
+  const discovery=new DiscoveryService({db,fetcher,inspect,digital,qualification});
+  app.locals.discovery=discovery;
+  mountDiscovery(app,discovery);
   app.get('/api/state',(req,res)=>{
     const prospects=db.prepare('SELECT * FROM prospects ORDER BY created DESC').all();
     const messages=db.prepare('SELECT m.*,p.company FROM messages m JOIN prospects p ON p.id=m.prospect_id ORDER BY m.created DESC').all();
@@ -320,11 +325,11 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     });
     res.json({ok:true});
   });
-  for (const [route,file] of Object.entries({'/':'index.html','/app.js':'app.js','/dashboard.js':'dashboard.js','/audit.js':'audit.js','/outreach-ui.js':'outreach-ui.js','/style.css':'style.css','/entities-ui.js':'entities-ui.js','/omni-digital-logo.png':'omni-digital-logo.png','/commercial-ui.js':'commercial-ui.js','/digital-audit-ui.js':'digital-audit-ui.js','/qualification-ui.js':'qualification-ui.js'})) app.get(route,(req,res)=>res.sendFile(resolve(ROOT,'static',file)));
+  for (const [route,file] of Object.entries({'/':'index.html','/app.js':'app.js','/dashboard.js':'dashboard.js','/audit.js':'audit.js','/outreach-ui.js':'outreach-ui.js','/style.css':'style.css','/entities-ui.js':'entities-ui.js','/omni-digital-logo.png':'omni-digital-logo.png','/commercial-ui.js':'commercial-ui.js','/digital-audit-ui.js':'digital-audit-ui.js','/qualification-ui.js':'qualification-ui.js','/prospect-discovery-ui.js':'prospect-discovery-ui.js'})) app.get(route,(req,res)=>res.sendFile(resolve(ROOT,'static',file)));
   app.use((req,res)=>res.status(404).json({error:'Introuvable'}));
   app.use((error,req,res,next)=>{
     const status=error.status || (error.type==='entity.too.large'?413:500);
-    res.status(status).json({error:(error instanceof QualificationError || error instanceof CommercialError || error instanceof EntityError || error instanceof InputError || error instanceof AuditError || error instanceof PolicyError)?error.message:status===413?'Fichier trop volumineux.':status===400?'Requête invalide.':'Erreur interne. Consultez la configuration du serveur.'});
+    res.status(status).json({error:(error instanceof DiscoveryError || error instanceof QualificationError || error instanceof CommercialError || error instanceof EntityError || error instanceof InputError || error instanceof AuditError || error instanceof PolicyError)?error.message:status===413?'Fichier trop volumineux.':status===400?'Requête invalide.':'Erreur interne. Consultez la configuration du serveur.'});
   });
   return app;
 }
@@ -339,7 +344,7 @@ export function startServer() {
     const db=openDatabase(resolve(config.dataDir,'crm.sqlite3'));
     const app=createApp({db,config});
     const server=app.listen(Number(process.env.PORT || 8000),config.production?'0.0.0.0':'127.0.0.1',()=>{console.log('OmniDigital CRM — serveur Node.js démarré. port='+server.address().port);app.locals.mail.start()});
-    const stop=()=>{app.locals.mail.stop();server.close(async()=>{await app.locals.digitalAudit.close();await app.locals.qualification.close();db.close();process.exit(0)})};
+    const stop=()=>{app.locals.mail.stop();server.close(async()=>{await app.locals.discovery.close();await app.locals.digitalAudit.close();await app.locals.qualification.close();db.close();process.exit(0)})};
     process.on('SIGTERM',stop);process.on('SIGINT',stop);
   } catch (error) { console.error(error.message);process.exitCode=1; }
 }
