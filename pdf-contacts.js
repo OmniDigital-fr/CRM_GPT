@@ -6,12 +6,13 @@ const normalize=value=>String(value||'').normalize('NFKD').toLowerCase().replace
 const emailKey=value=>String(value||'').trim().toLowerCase();
 const phoneKey=value=>String(value||'').replace(/\D/g,'').replace(/^33(?=\d{9}$)/,'0');
 const pdfFields={
-  name:['Entreprise','Raison sociale','Nom de l’entreprise','Nom de l\'entreprise','Nom'],
+  name:['Raison sociale','Dénomination sociale','Nom de la société','Société','Entreprise','Nom de l’entreprise','Nom de l\'entreprise','Nom'],
   siren:['SIREN'],siret:['SIRET'],website:['Site web','Site internet'],address:['Adresse'],
   postal_code:['Code postal'],city:['Ville','Commune'],industry:['Secteur','Activité'],
   display_name:['Dirigeant(e)','Dirigeant','Nom du contact','Contact'],job_title:['Fonction','Poste'],
-  email:['Email du contact','Email','E-mail','Courriel'],phone:['Téléphone','Tél.'],mobile:['Mobile','Portable']
+  email:['Email du contact','Adresse email','Adresse e-mail','Email','E-mail','Courriel'],phone:['Téléphone professionnel','Téléphone','Tél.','Tél'],mobile:['Mobile','Portable']
 };
+const knownLabels=new Set(Object.values(pdfFields).flat().map(label=>label.toLowerCase()));
 const contactFields=new Set(['display_name','job_title','email','phone','mobile']);
 const fail=(message,status=400)=>{throw new EntityError(message,status);};
 
@@ -21,14 +22,23 @@ function extractFields(text){
   for(const [key,labels] of Object.entries(pdfFields)){
     for(const label of labels){
       const escaped=label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-      const rule=new RegExp('^\\s*'+escaped+'(?:\\s*:\\s*|\\s{2,})(\\S.{0,499})$','iu');
-      const matches=[...new Set(lines.map(line=>line.match(rule)?.[1].trim()).filter(value=>value&&!/^(?:[-–—]+|n\/?a|non renseigné|inconnu)$/i.test(value)))];
+      const rule=new RegExp('^\\s*'+escaped+'(?:[ \t]*:[ \t]*|[ \t]{2,})(.{1,499})$','iu');
+      const labelOnly=new RegExp('^\\s*'+escaped+'[ \t]*:?[ \t]*$','iu');
+      const matches=[...new Set(lines.map((line,index)=>{
+        const inline=line.match(rule)?.[1].trim();
+        if(inline)return inline;
+        if(!labelOnly.test(line))return '';
+        const next=lines[index+1]?.trim()||'';
+        const nextLabel=next.split(/:|[ \t]{2,}/,1)[0].trim().toLowerCase();
+        return next.length<=499&&!knownLabels.has(nextLabel)?next:'';
+      }).filter(value=>value&&!/^(?:[-–—]+|n\/?a|non renseigné|inconnu)$/i.test(value)))];
       if(matches.length>1)fail('Plusieurs valeurs pour « '+label+' ». Utilisez un PDF pour une seule entreprise.');
       if(matches.length){values[key]=matches[0];break;}
     }
   }
-  if(!values.name)fail('Entreprise non identifiée. Vérifiez les libellés du PDF.');
+  if(!values.name)fail('Entreprise non identifiée dans le PDF. Utilisez un champ « Entreprise », « Raison sociale » ou « Nom de la société » suivi de sa valeur.');
   if(values.email)values.email=emailKey(values.email);
+  if(values.website&&/^(?:www\.)?[a-z\d][a-z\d.-]*\.[a-z]{2,}(?:[/?#]|$)/i.test(values.website))values.website='https://'+values.website;
   validateFrenchCompanyIds(values);
   return values;
 }

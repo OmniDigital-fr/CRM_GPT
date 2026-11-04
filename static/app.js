@@ -3,7 +3,7 @@ function contactBlocked(p){return p.status==='Opposition'||p.contact_permission=
 let state, view='dashboard', editingId=null;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path,data,raw=false){const r=await fetch(path,data===undefined?{}:{method:'POST',headers:{'Content-Type':raw?'application/pdf':'application/json'},body:raw?data:JSON.stringify(data)});const v=await r.json();if(!r.ok)throw Error(v.error);return v}
+async function api(path,data,raw=false){const r=await fetch(path,data===undefined?{}:{method:'POST',headers:{'Content-Type':raw?'application/pdf':'application/json'},body:raw?data:JSON.stringify(data)});const v=await r.json().catch(()=>null);if(!r.ok||!v)throw Error(v?.error||`Réponse inattendue du serveur (HTTP ${r.status}). Actualisez la page et réessayez.`);return v}
 function notice(s){$('#notice').textContent=s}
 async function refresh(){const [legacy,companies,contacts,entityMeta,opportunities,tasks,commercialMeta,commercialMetrics,qualificationIndex]=await Promise.all([api('/api/state'),api('/api/companies'),api('/api/contacts'),api('/api/entities/meta'),api('/api/opportunities'),api('/api/tasks'),api('/api/commercial/meta'),api('/api/commercial/dashboard'),api('/api/qualification/companies')]);state={...legacy,...companies,...contacts,entityMeta,...opportunities,...tasks,commercialMeta,commercialMetrics,qualificationIndex:qualificationIndex.companies};render()}
 function metric(label,n,detail){return `<article class="metric"><span class="label">${label}</span><strong>${n}</strong><small>${detail}</small></article>`}
@@ -103,7 +103,13 @@ $('#import-pdf').onclick=()=>{
    const preview=await api('/api/pdf-contacts/preview',input.files[0],true);
    showPdfReview(preview);
    notice('Vérifiez les données extraites avant de les appliquer.');
-  }catch(e){notice(e.message)}finally{button.disabled=false}
+  }catch(error){
+   notice(error.message);
+   pdfReview.innerHTML='<h2>Import PDF impossible</h2><p role="alert"></p><button type="button">Fermer</button>';
+   pdfReview.querySelector('[role=alert]').textContent=error.message;
+   pdfReview.querySelector('button').onclick=()=>pdfReview.close();
+   if(!pdfReview.open)pdfReview.showModal();
+  }finally{button.disabled=false}
  };input.click();
 };
 
@@ -113,16 +119,41 @@ function updateThemeLabel(){const dark=document.documentElement.dataset.theme===
 updateThemeLabel();
 $('#theme-toggle').onclick=()=>{document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('omni-theme',document.documentElement.dataset.theme)}catch(e){}updateThemeLabel()};
 
-async function requestDelete(id){
+function requestDelete(id){
  const p=state.prospects.find(p=>p.id===id);if(!p)return;
- $('#delete-name').textContent=p.company;
- const dialog=$('#delete-modal');dialog.dataset.id=id;dialog.showModal();
+ const contact=state.contacts.find(c=>c.prospect_id===id);
+ if(contact){requestDeleteContact(contact.id,contact.display_name||contact.email||p.company);return;}
+ openDeleteDialog(id,p.company,'prospects');
+}
+function requestDeleteContact(id,name,returnToCompany=false){
+ openDeleteDialog(id,name,'contacts',returnToCompany);
+}
+function openDeleteDialog(id,name,kind,returnToCompany=false){
+ const dialog=$('#delete-modal');
+ Object.assign(dialog.dataset,{id,kind,returnToCompany:String(returnToCompany)});
+ $('#delete-name').textContent=name;
+ $('#delete-company-retained').hidden=kind!=='contacts';
+ dialog.showModal();
 }
 $('#cancel-delete').onclick=()=>$('#delete-modal').close();
 $('#confirm-delete').onclick=async()=>{
- const button=$('#confirm-delete'),dialog=$('#delete-modal'),id=dialog.dataset.id;
+ const button=$('#confirm-delete'),dialog=$('#delete-modal');
+ const {id,kind,returnToCompany}=dialog.dataset;
  button.disabled=true;
- try{await api(`/api/prospects/${id}/delete`,{confirm:id});dialog.close();await refresh();notice('Contact et dossier associé supprimés.')}catch(e){$('#delete-error').textContent=e.message}finally{button.disabled=false}
+ try{
+  const result=await api(`/api/${kind}/${id}/delete`,{confirm:id});
+  dialog.close();
+  if(kind==='contacts'&&entityDialog.open)entityDialog.close();
+  try{
+   await refresh();
+   if(returnToCompany==='true'){
+    await entityOpen('companies',result.company_id);
+    entityDialog.querySelector('[data-entity-tab="1"]')?.click();
+   }
+   notice('Contact et dossier associé supprimés.');
+  }catch(error){notice('Contact supprimé. Actualisation impossible : '+error.message);}
+ }catch(error){$('#delete-error').textContent=error.message;}
+ finally{button.disabled=false;}
 };
 $('#delete-modal').addEventListener('close',()=>{$('#delete-error').textContent=''});
 

@@ -485,3 +485,22 @@ test('PDF outreach uses fresh CRM audit, sequences are drafts and approval remai
  }
  assert.equal((await f.request('/api/messages/'+messages[0].id+'/record-sent',{confirm:messages[0].id})).status,400);
 });
+
+test('structured import reads a real PDF with labels above values and a bare website',async t=>{
+ const f=await fixture(t);
+ const {default:PDFDocument}=await import('pdfkit');
+ const document=new PDFDocument(),chunks=[];
+ document.on('data',chunk=>chunks.push(chunk));
+ const finished=once(document,'end');
+ document.text('Dénomination sociale\nAtelier Exemple\nSite internet :\nwww.example.com\nAdresse e-mail\ncontact@example.com\nTéléphone professionnel\n0102030405');
+ document.end();
+ await finished;
+ const response=await fetch(f.base+'/api/pdf-contacts/preview',{method:'POST',headers:{'Content-Type':'application/pdf'},body:Buffer.concat(chunks)});
+ const preview=await response.json();
+ assert.equal(response.status,200,JSON.stringify(preview));
+ const fields=Object.fromEntries(preview.changes.map(field=>[field.key,field.value]));
+ assert.deepEqual(fields,{name:'Atelier Exemple',website:'https://www.example.com',email:'contact@example.com',phone:'0102030405'});
+ const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.token,choices:{}});
+ assert.equal(saved.status,200);
+ assert.ok(saved.data.contact_id);
+});
