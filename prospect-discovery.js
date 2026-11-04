@@ -74,14 +74,37 @@ function matchesSize(range,selection){
   if(!range)return true; // The registry often omits the workforce.
   return selection.some(label=>sizes[label]&&range[0]<=sizes[label][1]&&range[1]>=sizes[label][0]);
 }
+function establishmentDepartment(establishment){
+  if(establishment.departement)return establishment.departement;
+  // The official formatter removes departement from matching_etablissements.
+  const commune=text(establishment.commune,5).toUpperCase();
+  if(/^2[AB]\d{3}$/.test(commune))return commune.slice(0,2);
+  if(/^\d{5}$/.test(commune))return commune.slice(0,/^(97|98)/.test(commune)?3:2);
+  const postal=text(establishment.code_postal,5);
+  if(/^\d{5}$/.test(postal)&&!postal.startsWith('20'))return postal.slice(0,/^(97|98)/.test(postal)?3:2);
+  return '';
+}
+function matchesLocation(establishment,{location,area}){
+  if(location==='all')return true;
+  if(location==='department')return normalize(establishmentDepartment(establishment))===normalize(area);
+  if(location==='city'){
+    const city=normalize(establishment.libelle_commune);
+    const requested=normalize(area);
+    if(city===requested)return true;
+    return ['paris','lyon','marseille'].includes(requested)&&
+      new RegExp('^'+requested+'[0-9]{1,2}(?:er|e|eme)?arrondissement$').test(city);
+  }
+  return normalize(establishment[location==='region'?'region':'code_postal'])===normalize(area);
+}
+const publicEstablishment=establishment=>establishment?.etat_administratif==='A'&&
+  !['P','N'].includes(establishment.statut_diffusion_etablissement??establishment.statut_diffusion);
+
 function registryCompany(row,criteria){
-  if(row?.etat_administratif!=='A'||row.statut_diffusion==='P'||row.statut_diffusion==='N')return null;
+  if(row?.etat_administratif!=='A'||['P','N'].includes(row.statut_diffusion)||row.opposition_diffusion_commerciale===true)return null;
   const seat=row.siege||{};
-  if(seat.statut_diffusion==='P'||seat.statut_diffusion==='N')return null;
-  const matched=(Array.isArray(row.matching_etablissements)?row.matching_etablissements:[]).filter(e=>e.etat_administratif==='A');
-  const field={region:'region',department:'departement',city:'libelle_commune',postal:'code_postal'}[criteria.location];
-  const address=[seat,...matched].find(e=>e.etat_administratif==='A'&&(!field||normalize(e[field])===normalize(criteria.area)));
-  if(!address||address.statut_diffusion==='P'||address.statut_diffusion==='N')return null;
+  const matched=Array.isArray(row.matching_etablissements)?row.matching_etablissements:[];
+  const address=[seat,...matched].find(e=>publicEstablishment(e)&&matchesLocation(e,criteria));
+  if(!address)return null;
   const identity={siren:text(row.siren,20),siret:text(address.siret,20)};
   if(!identity.siren)return null;
   try{validateFrenchCompanyIds(identity);}catch{return null;}
@@ -123,7 +146,7 @@ async function readRegistry(response){
 }
 function registryUrl(criteria,page){
   const url=new URL(endpoint);
-  url.search=new URLSearchParams({etat_administratif:'A',per_page:'25',page:String(page)});
+  url.search=new URLSearchParams({etat_administratif:'A',per_page:'25',page:String(page),minimal:'true',include:'siege,matching_etablissements'});
   const geo={region:'region',department:'departement',postal:'code_postal'}[criteria.location];
   if(geo)url.searchParams.set(geo,criteria.area);
   const query=criteria.query||(criteria.location==='city'?criteria.area:'');
@@ -228,7 +251,7 @@ export class DiscoveryService {
           seen.add(company.siren);
           if(seen.size===criteria.limit)break;
         }
-        if(payload.results.length<25||(Number.isInteger(payload.total_pages)&&page>=payload.total_pages))break;
+        if(!payload.results.length||(Number.isInteger(payload.total_pages)?page>=payload.total_pages:payload.results.length<25))break;
       }
       this.finish(id,signal.aborted?'cancelled':'completed');
     }catch(error){

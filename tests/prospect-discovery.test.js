@@ -278,3 +278,27 @@ test('published generic channels are sourced without importing personal contacts
     {general_email:'contact@company.example.com',general_phone:'0123456789'});
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM contacts').get().n,0);
 });
+
+test('official matching establishments without department remain discoverable by commune code',async t=>{
+  const row=registry();
+  const f=await fixture(t,{fetcher:async url=>{
+    const params=new URL(url).searchParams;
+    assert.equal(params.get('minimal'),'true');
+    assert.equal(params.get('include'),'siege,matching_etablissements');
+    return registryResponse([{...row,siege:{...row.siege,departement:'69'},matching_etablissements:[
+      {siret:establishment(row.siren,'0002'),etat_administratif:'A',commune:'75115',code_postal:'75015',libelle_commune:'Paris 15e Arrondissement',region:'11',statut_diffusion_etablissement:'O'}
+    ]}]);
+  }});
+  const run=await f.search({location:'department',area:'75'});
+  assert.equal(run.stats.found,1);
+  assert.equal(run.results[0].company.postal_code,'75015');
+  assert.equal((await f.search({location:'city',area:'Paris'})).stats.found,1);
+});
+
+test('restricted establishments and official commercial opposition are excluded',async t=>{
+  const f=await fixture(t,{fetcher:async()=>registryResponse([
+    registry(sirens[0],{siege:{...registry().siege,statut_diffusion_etablissement:'P'}}),
+    registry(sirens[1],{opposition_diffusion_commerciale:true})
+  ])});
+  assert.equal((await f.search()).stats.found,0);
+});
