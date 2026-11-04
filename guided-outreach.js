@@ -2,6 +2,7 @@ import {PolicyError,assertDraftAllowed} from './contact-policy.js';
 
 const MAX_AUDIT_AGE = 90 * 24 * 60 * 60 * 1000;
 const observations = [
+  {id:'page0-title',status:'Problème important',subject:'Une piste pour présenter votre site',text:'Lors du contrôle de la page auditée, l’outil n’a pas détecté de titre de page. Je vous propose de vérifier comment cette page se présente dans le navigateur et lorsqu’elle est partagée.'},
   {id:'page0-viewport',status:'Amélioration recommandée',subject:'Une piste pour votre site sur mobile',text:'Lors du contrôle de votre page auditée, l’outil n’a pas détecté le réglage qui aide les téléphones à adapter l’affichage. Je vous propose de vérifier ensemble le rendu sur mobile.'},
   {id:'page0-alt',status:'Problème important',subject:'Une piste d’accessibilité pour votre site',text:'Le contrôle de votre page auditée a repéré des images sans texte alternatif. Je vous propose de vérifier lesquelles transmettent une information utile et gagneraient à être décrites.'}
 ];
@@ -43,9 +44,10 @@ export function guidedDraft(db,prospect) {
   const observation=usable&&observations.find(item=>result.controls.some(control=>
     control?.id===item.id&&control.status===item.status&&control.source==='HTML reçu'&&control.page_url===result.url));
   if(!observation)throw new PolicyError('Aucun constat exploitable sur la page auditée dans le dernier audit. Vérifiez le site ou relancez Audit digital.',409);
+  const company=String(prospect.company||'').replace(/\s+/g,' ').trim().slice(0,140);
   return {
     subject:observation.subject,
-    body:`Bonjour,\n\nJe vous contacte de la part d’OmniDigital. ${observation.text}\n\nSi ce point vous intéresse, seriez-vous disponible pour un échange de 15 minutes ? Vous pouvez me répondre directement ou choisir un créneau : https://calendar.app.google/d2Cz8bKbXN6zfxsX6\n\nBien cordialement,\nOmniDigital\nhttps://omnidigital.fr\n\nSi vous ne souhaitez plus recevoir de messages de notre part, répondez simplement « stop ».`,
+    body:`Bonjour,\n\nJe vous contacte de la part d’OmniDigital au sujet du site de ${company}. ${observation.text}\n\nSi ce point vous intéresse, seriez-vous disponible pour un échange de 15 minutes ? Vous pouvez me répondre directement ou choisir un créneau : https://calendar.app.google/d2Cz8bKbXN6zfxsX6\n\nBien cordialement,\nOmniDigital\nhttps://omnidigital.fr\n\nSi vous ne souhaitez plus recevoir de messages de notre part, répondez simplement « stop ».`,
     context:`Brouillon ciblé · Audit ${audit.id} · ${result.date.slice(0,10)} · contrôle ${observation.id}. Vérifier le constat avant approbation.`
   };
 }

@@ -8,7 +8,7 @@ function notice(s){$('#notice').textContent=s}
 async function refresh(){const [legacy,companies,contacts,entityMeta,opportunities,tasks,commercialMeta,commercialMetrics,qualificationIndex]=await Promise.all([api('/api/state'),api('/api/companies'),api('/api/contacts'),api('/api/entities/meta'),api('/api/opportunities'),api('/api/tasks'),api('/api/commercial/meta'),api('/api/commercial/dashboard'),api('/api/qualification/companies')]);state={...legacy,...companies,...contacts,entityMeta,...opportunities,...tasks,commercialMeta,commercialMetrics,qualificationIndex:qualificationIndex.companies};render()}
 function metric(label,n,detail){return `<article class="metric"><span class="label">${label}</span><strong>${n}</strong><small>${detail}</small></article>`}
 function duplicateIds(){return new Set((state.duplicate_groups||[]).flatMap(g=>g.ids))}
-function table(items=state.prospects){const q=($('#search').value||'').toLocaleLowerCase('fr');items=items.filter(p=>[p.company,p.contact_name,p.email,p.phone,p.city].some(v=>String(v||'').toLocaleLowerCase('fr').includes(q)));return items.length?`<div class="table-wrap"><table><thead><tr><th>ENTREPRISE</th><th>CONTACT</th><th>STATUT</th><th>DOSSIER & ANALYSE</th><th>ACTIONS</th></tr></thead><tbody>${items.map(p=>{let audit=JSON.parse(p.audit);return `<tr><td><b>${esc(p.company)}</b> ${contactBlocked(p)?'<span class="blocked-badge">Ne pas contacter</span>':''} ${duplicateIds().has(p.id)?'<span class="duplicate-badge">Doublon à vérifier</span>':''}<br><span class="muted">${esc(p.email||'Email non renseigné')}</span><br><span class="muted">${esc(p.website)}</span><br><span class="muted">${esc([p.city,p.industry].filter(Boolean).join(' · '))}</span></td><td>${esc(p.contact_name||'À renseigner')}<br><span class="muted">${esc(p.phone||p.mobile||'')}</span><br><span class="muted">${p.priority?'Priorité : '+esc(p.priority):''}${p.next_followup?' · Relance : '+esc(p.next_followup):''}</span></td><td><select data-status="${p.id}" aria-label="Statut de ${esc(p.company)}">${CONTACT_STATUSES.map(x=>`<option ${p.status===x?'selected':''}>${x}</option>`).join('')}</select></td><td><span class="muted">${p.pdf_text?'PDF importé · '+p.pdf_text.length+' caractères':'Aucun PDF'}</span><br><span class="muted">${audit.scores?esc(Object.entries(audit.scores).map(([k,v])=>`${k}: ${v}/100`).join(' · ')):'Aucun audit Google'}</span></td><td><button data-edit="${p.id}">Voir / modifier</button><button data-history="${p.id}">Historique</button><button class="danger-button" data-delete="${p.id}">Supprimer</button><button data-pdf="${p.id}">Importer PDF</button><button data-audit="${p.id}">Audit digital</button><button data-reply-contact="${p.id}">Regist. réponse</button><button data-action="draft" data-id="${p.id}" ${contactBlocked(p)||p.do_not_email==='Oui'?'disabled title="Prospection bloquée pour ce contact"':''}>Préparer un email</button></td></tr>`}).join('')}</tbody></table></div>`:'<div class="empty">Votre prochain client commence ici.<br>Ajoutez un prospect pour constituer son dossier.</div>'}
+function table(items=state.prospects){const q=($('#search').value||'').toLocaleLowerCase('fr');items=items.filter(p=>[p.company,p.contact_name,p.email,p.phone,p.city].some(v=>String(v||'').toLocaleLowerCase('fr').includes(q)));return items.length?`<div class="table-wrap"><table><thead><tr><th>ENTREPRISE</th><th>CONTACT</th><th>STATUT</th><th>DOSSIER & ANALYSE</th><th>ACTIONS</th></tr></thead><tbody>${items.map(p=>{let audit=JSON.parse(p.audit);return `<tr><td><b>${esc(p.company)}</b> ${contactBlocked(p)?'<span class="blocked-badge">Ne pas contacter</span>':''} ${duplicateIds().has(p.id)?'<span class="duplicate-badge">Doublon à vérifier</span>':''}<br><span class="muted">${esc(p.email||'Email non renseigné')}</span><br><span class="muted">${esc(p.website)}</span><br><span class="muted">${esc([p.city,p.industry].filter(Boolean).join(' · '))}</span></td><td>${esc(p.contact_name||'À renseigner')}<br><span class="muted">${esc(p.phone||p.mobile||'')}</span><br><span class="muted">${p.priority?'Priorité : '+esc(p.priority):''}${p.next_followup?' · Relance : '+esc(p.next_followup):''}</span></td><td><select data-status="${p.id}" aria-label="Statut de ${esc(p.company)}">${CONTACT_STATUSES.map(x=>`<option ${p.status===x?'selected':''}>${x}</option>`).join('')}</select></td><td><span class="muted">${p.pdf_text?'PDF importé · '+p.pdf_text.length+' caractères':'Aucun PDF'}</span><br><span class="muted">${audit.scores?esc(Object.entries(audit.scores).map(([k,v])=>`${k}: ${v}/100`).join(' · ')):'Aucun audit Google'}</span></td><td><button data-edit="${p.id}">Voir / modifier</button><button data-history="${p.id}">Historique</button><button class="danger-button" data-delete="${p.id}">Supprimer</button><button data-audit="${p.id}">Audit digital</button><button data-reply-contact="${p.id}">Regist. réponse</button><button data-action="draft" data-id="${p.id}" ${contactBlocked(p)||p.do_not_email==='Oui'?'disabled title="Prospection bloquée pour ce contact"':''}>Préparer un email</button></td></tr>`}).join('')}</tbody></table></div>`:'<div class="empty">Votre prochain client commence ici.<br>Ajoutez un prospect pour constituer son dossier.</div>'}
 function render(){
  const titles={digitalAudits:'Audit digital',pipeline:'Opportunités',tasks:'Tâches',companies:'Entreprises',contacts:'Contacts',dashboard:'Dashboard',prospects:'Dossiers & outils',research:'Prospection',discovery:'Recherche de prospects',followups:'Relances',campaigns:'Emails',sequences:'Séquences',templates:'Modèles',integrations:'Paramètres'};
  $('#title').textContent=titles[view]||'Dashboard';
@@ -52,8 +52,47 @@ document.querySelectorAll('nav [data-view]').forEach(b=>b.onclick=()=>{view=b.da
 }
 $('#add').onclick=()=>view==='pipeline'?commercialEdit('opportunities'):view==='tasks'?commercialEdit('tasks'):entityEdit(view==='companies'?'companies':'contacts');$('#cancel').onclick=()=>$('#modal').close();$('#create').onsubmit=async e=>{e.preventDefault();try{await api(editingId?`/api/prospects/${editingId}/update`:'/api/prospects',{...Object.fromEntries(new FormData(e.target)),country:editingId?(state.prospects.find(p=>p.id===editingId)?.country||''):''});e.target.reset();$('#modal').close();await refresh();notice('Prospect enregistré.')}catch(e){$('#contact-error').textContent=e.message}};
 $('#content').addEventListener('change',async e=>{if(e.target.dataset.status){try{await api(`/api/prospects/${e.target.dataset.status}/status`,{status:e.target.value});await refresh()}catch(e){notice(e.message);await refresh()}}});
-$('#content').addEventListener('click',async e=>{let b=e.target.closest('button');if(!b)return;try{if(b.dataset.history){openContact(state.prospects.find(p=>p.id===b.dataset.history));$('#contact-history').open=true;$('#contact-history').scrollIntoView({block:'start'});return}if(b.dataset.audit){const contact=state.contacts.find(c=>c.prospect_id===b.dataset.audit);if(!contact){view='companies';render();notice('Ce dossier historique doit être associé à une entreprise pour utiliser Audit digital. Les anciens résultats sont conservés.');return}await openDigitalAudit(contact.company_id);return}if(b.dataset.delete){await requestDelete(b.dataset.delete);return}if(b.dataset.go){view=b.dataset.go;render();return}if(b.dataset.chart){chartMode=b.dataset.chart;render();return}if(b.dataset.edit){openContact(state.prospects.find(p=>p.id===b.dataset.edit));return}if(b.dataset.action){b.disabled=true;notice(b.dataset.action==='audit'?'Analyse Google en cours…':'Préparation du brouillon…');await api(`/api/prospects/${b.dataset.id}/${b.dataset.action}`,{});if(b.dataset.action==='draft')view='campaigns';await refresh();notice('Opération terminée.')}if(b.dataset.pdf){let input=document.createElement('input');input.type='file';input.accept='application/pdf';input.onchange=async()=>{if(!input.files[0])return;try{await api(`/api/prospects/${b.dataset.pdf}/pdf`,input.files[0],true);await refresh();notice('Texte du PDF ajouté au dossier.')}catch(e){notice(e.message)}};input.click()}if(b.dataset.copy){await navigator.clipboard.writeText(state.messages.find(x=>x.id===b.dataset.copy).body);notice('Texte copié.')}}catch(e){notice(e.message)}finally{b.disabled=false}});refresh().catch(e=>notice(e.message));
+$('#content').addEventListener('click',async e=>{let b=e.target.closest('button');if(!b)return;try{if(b.dataset.history){openContact(state.prospects.find(p=>p.id===b.dataset.history));$('#contact-history').open=true;$('#contact-history').scrollIntoView({block:'start'});return}if(b.dataset.audit){const contact=state.contacts.find(c=>c.prospect_id===b.dataset.audit);if(!contact){view='companies';render();notice('Ce dossier historique doit être associé à une entreprise pour utiliser Audit digital. Les anciens résultats sont conservés.');return}await openDigitalAudit(contact.company_id);return}if(b.dataset.delete){await requestDelete(b.dataset.delete);return}if(b.dataset.go){view=b.dataset.go;render();return}if(b.dataset.chart){chartMode=b.dataset.chart;render();return}if(b.dataset.edit){openContact(state.prospects.find(p=>p.id===b.dataset.edit));return}if(b.dataset.action){b.disabled=true;notice(b.dataset.action==='audit'?'Analyse Google en cours…':'Préparation du brouillon…');await api(`/api/prospects/${b.dataset.id}/${b.dataset.action}`,{});if(b.dataset.action==='draft')view='campaigns';await refresh();notice('Opération terminée.')}if(b.dataset.copy){await navigator.clipboard.writeText(state.messages.find(x=>x.id===b.dataset.copy).body);notice('Texte copié.')}}catch(e){notice(e.message)}finally{b.disabled=false}});refresh().catch(e=>notice(e.message));
 
+const pdfReview=document.createElement('dialog');
+pdfReview.className='entity-dialog';
+document.body.append(pdfReview);
+function showPdfReview(preview){
+ const lines=preview.changes.map(field=>`<fieldset><legend>${esc(field.label)}</legend>
+  ${field.conflict?`<label><input type="radio" name="${esc(field.key)}" value="crm" required> CRM : ${esc(field.current)}</label>
+  <label><input type="radio" name="${esc(field.key)}" value="pdf"> PDF : ${esc(field.value)}</label>`:`<p>${esc(field.value)}</p>`}</fieldset>`).join('');
+ pdfReview.innerHTML=`<form><h2>Vérifier l’import PDF</h2><p>${esc(preview.company)}</p>
+ <p>Seules l’identité et les coordonnées seront importées. Le CRM analysera le site enregistré.</p>
+ ${lines||'<p>Aucune différence détectée.</p>'}<p role="alert"></p>
+ <div class="actions"><button type="button">Annuler</button><button class="primary">Confirmer l’import</button></div></form>`;
+ const form=pdfReview.querySelector('form');
+ form.querySelector('button[type=button]').onclick=()=>pdfReview.close();
+ form.onsubmit=async event=>{
+  event.preventDefault();
+  const button=event.submitter;
+  button.disabled=true;
+  let imported;
+  try{imported=await api('/api/pdf-contacts/confirm',{token:preview.token,choices:Object.fromEntries(new FormData(form))});}
+  catch(error){form.querySelector('[role=alert]').textContent=error.message;button.disabled=false;return;}
+  pdfReview.close();
+  try{
+   await refresh();
+   const company=state.companies.find(item=>item.id===imported.company_id);
+   if(company?.website){
+    let message='Fiche enregistrée. Audit demandé.';
+    try{await api('/api/digital-audits',{company_id:company.id});}
+    catch(error){message='Fiche enregistrée. Audit : '+error.message;}
+    await openDigitalAudit(company.id);
+    notice(message);
+   }else{
+    view=imported.contact_id?'contacts':'companies';render();
+    await entityOpen(view,imported.contact_id||imported.company_id);
+    notice('Fiche enregistrée. Renseignez le site pour lancer Audit digital.');
+   }
+  }catch(error){notice('Fiche enregistrée. '+error.message);}
+ };
+ pdfReview.showModal();
+}
 $('#import-pdf').onclick=()=>{
  const input=document.createElement('input');input.type='file';input.accept='application/pdf';
  input.onchange=async()=>{
@@ -61,9 +100,9 @@ $('#import-pdf').onclick=()=>{
   const button=$('#import-pdf');button.disabled=true;
   notice('Import du dossier PDF en cours…');
   try{
-   const result=await api('/api/import-pdf',input.files[0],true);
-   view='prospects';await refresh();
-   notice(result.created?'Prospect créé avec le texte du rapport PDF. Aucun email envoyé.':'Ce prospect existe déjà. Aucun doublon créé.');
+   const preview=await api('/api/pdf-contacts/preview',input.files[0],true);
+   showPdfReview(preview);
+   notice('Vérifiez les données extraites avant de les appliquer.');
   }catch(e){notice(e.message)}finally{button.disabled=false}
  };input.click();
 };
