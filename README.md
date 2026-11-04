@@ -139,3 +139,11 @@ Voir [COMMERCIAL_PIPELINE.md](COMMERCIAL_PIPELINE.md) pour le schéma, les règl
 La branche `feature/digital-audit-engine` ajoute un menu **Audit digital** rattaché aux entreprises, une file d’exécution, des contrôles documentés, Google PageSpeed mobile et desktop lorsque la clé existe, un historique, une comparaison et deux exports PDF réels. Les anciens audits restent consultables. Aucun email ni opportunité n’est créé automatiquement.
 
 Voir [DIGITAL_AUDIT_ENGINE.md](DIGITAL_AUDIT_ENGINE.md) pour l’architecture réutilisée, les mesures, la méthodologie, les limites, les APIs, les tests, l’installation et les sauvegardes. La publication reste soumise à validation.
+
+### Phase 4 — Qualification IA
+
+L’onglet **Qualification IA** des entreprises sépare Fit, Need et Intent, conserve
+les preuves et décisions manuelles, et propose une synthèse OpenAI uniquement sur
+une demande individuelle payante. Sans clé, les scores locaux restent disponibles.
+Configuration, méthode, budgets, sécurité et limites :
+[AI_LEAD_QUALIFICATION.md](AI_LEAD_QUALIFICATION.md).
