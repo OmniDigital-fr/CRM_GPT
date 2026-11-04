@@ -134,7 +134,11 @@ function discoveryResults(run){
     filters.includes(row.digital)||(filters.includes('Site web existant')&&row.verification.confirmed));
   const stats=run.stats, batch=run.enrichment;
   return `<section class="panel"><div class="panel-heading"><h2>Résultats</h2><span class="badge">${esc(discoveryLabels[run.state]||run.state)}</span></div>
-    <p>${stats.found} trouvés · ${stats.verified} sites vérifiés · ${stats.duplicates} doublons possibles · ${stats.approved} approuvés · ${stats.rejected} rejetés · ${stats.imported} importés · ${run.requests} appels source</p>
+    <p>${stats.found} trouvés · ${stats.verified} sites vérifiés · ${stats.duplicates} doublons possibles · ${stats.approved} approuvés · ${stats.rejected} rejetés · ${stats.imported} importés · ${run.requests} appels source · ${run.source_count} lignes reçues du registre</p>
+    ${run.state==='completed'&&!visible.length?`<p>${stats.found
+      ?'Les filtres de présence digitale masquent tous les candidats. Affichez tous les résultats pour vérifier leurs sites.'
+      :run.source_count?'Le registre a répondu, mais aucune fiche reçue ne correspond aux critères ou aux contrôles de validation. Essayez une zone ou des filtres plus larges.'
+      :'Le registre n’a renvoyé aucune entreprise pour cette recherche. Essayez un code postal ou un nom d’entreprise.'}</p>`:''}
     ${run.error?`<p role="alert">${esc(run.error)}</p>`:''}
     ${run.state==='running'?'<button data-discovery-action="cancel">Arrêter la recherche</button>':''}
     ${filters.length?`<button data-discovery-action="toggle">${discoveryShowAll?'Appliquer le filtre digital':'Afficher tous les résultats pour vérification'}</button>`:''}
