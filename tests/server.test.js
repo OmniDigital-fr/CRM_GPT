@@ -415,3 +415,73 @@ test('interrupted IMAP batch retries safely without losing or duplicating replie
  assert.equal((await request('/api/mail/sync',{})).status,200);
  assert.equal((await request('/api/state')).data.replies.length,2);
 });
+
+async function previewPdf(f){
+ const response=await fetch(f.base+'/api/pdf-contacts/preview',{method:'POST',headers:{'Content-Type':'application/pdf'},body:Buffer.from('%PDF-test')});
+ return {status:response.status,data:await response.json()};
+}
+
+test('structured PDF fills missing data, requires conflict decisions and rejects a stale preview',async t=>{
+ const f=await fixture(t,{parsePdf:async()=> 'Entreprise : Société Exemple\nSite web : https://example.com\nDirigeant(e) : Camille Test\nEmail : new@example.com\nTéléphone : 0102030405\nOpportunité : AFFIRMATION PDF'});
+ const company=(await f.request('/api/companies',{name:'Société Exemple'})).data.id;
+ const contact=(await f.request('/api/contacts',{company_id:company,display_name:'Camille Test',email:'old@example.com'})).data.id;
+ const first=await previewPdf(f);
+ assert.equal(first.status,200);
+ assert.deepEqual(first.data.changes.filter(field=>field.conflict).map(field=>field.key),['email']);
+ const confirm=(preview,choices)=>f.request('/api/pdf-contacts/confirm',{token:preview.data.token,choices});
+ assert.equal((await confirm(first,{})).status,400);
+ await f.request('/api/contacts/'+contact+'/update',{job_title:'Direction'});
+ assert.equal((await confirm(first,{email:'crm'})).status,409);
+ const second=await previewPdf(f);
+ const saved=await confirm(second,{email:'crm'});
+ assert.equal(saved.status,200);
+ assert.equal(saved.data.contact_id,contact);
+ const row=(await f.request('/api/contacts/'+contact)).data;
+ assert.equal(row.phone,'0102030405');
+ assert.equal(row.email,'old@example.com');
+ assert.equal(row.company.website,'https://example.com');
+ assert.equal(row.job_title,'Direction');
+ assert.equal(f.db.prepare('SELECT count(*) n FROM companies').get().n,1);
+ assert.equal(f.db.prepare('SELECT count(*) n FROM contacts').get().n,1);
+ assert.equal(f.db.prepare('SELECT pdf_text FROM prospects').get().pdf_text,'');
+});
+
+test('PDF contact is adopted without losing existing legacy history',async t=>{
+ const f=await fixture(t,{parsePdf:async()=> 'Nom  Atelier Exemple\nEmail  atelier@example.com\nTéléphone  0102030405'});
+ const id=(await f.request('/api/prospects',{company:'Atelier Exemple',email:'atelier@example.com',notes:'Note historique',status:'Qualifié'})).data.id;
+ const preview=await previewPdf(f);
+ assert.equal(preview.status,200);
+ const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.data.token,choices:{}});
+ assert.equal(saved.status,200);
+ assert.equal(saved.data.prospect_id,id);
+ assert.equal(f.db.prepare('SELECT count(*) n FROM prospects').get().n,1);
+ assert.equal(f.db.prepare('SELECT notes FROM prospects WHERE id=?').get(id).notes,'Note historique');
+});
+
+test('PDF outreach uses fresh CRM audit, sequences are drafts and approval remains mandatory',async t=>{
+ const f=await fixture(t,{parsePdf:async()=> 'Nom  Atelier Exemple\nEmail  atelier@example.com\nSite web  https://example.com\nAnalyse : PROMESSE NON VALIDÉE',
+   inspect:async url=>({...samplePage(url),html:'<html><body><h1>Atelier</h1></body></html>'})});
+ const preview=await previewPdf(f);
+ const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.data.token,choices:{}});
+ assert.equal(saved.status,200);
+ const {company_id,prospect_id}=saved.data;
+ assert.equal((await f.request('/api/prospects/'+prospect_id+'/draft',{})).status,409);
+ const job=await f.request('/api/digital-audits',{company_id});
+ assert.equal(job.status,202);
+ for(let i=0;i<50;i++){
+   if(f.db.prepare('SELECT count(*) n FROM audits').get().n)break;
+   await new Promise(resolve=>setTimeout(resolve,10));
+ }
+ assert.equal((await f.request('/api/prospects/'+prospect_id+'/sequence',{})).status,201);
+ const messages=f.db.prepare('SELECT * FROM messages ORDER BY sequence_stage').all();
+ assert.equal(messages.length,4);
+ assert.match(messages[0].body,/Atelier Exemple/);
+ assert.match(messages[0].body,/titre de page/);
+ assert.equal(messages[1].subject,'Re : '+messages[0].subject);
+ for(const m of messages){
+   assert.equal(m.status,'Brouillon');
+   assert.equal(m.sent_at,'');
+   assert.doesNotMatch(m.body+m.internal_context,/PROMESSE NON VALIDÉE/);
+ }
+ assert.equal((await f.request('/api/messages/'+messages[0].id+'/record-sent',{confirm:messages[0].id})).status,400);
+});

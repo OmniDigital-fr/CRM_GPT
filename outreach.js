@@ -15,19 +15,23 @@ export function stopOutreach(db,prospectId,reason='Réponse reçue'){
  db.prepare("UPDATE messages SET status='Annulé',approved_at='' WHERE prospect_id=? AND status IN ('Brouillon','Approuvé')").run(prospectId);
  history(db,prospectId,'Séquence en pause',reason);
 }
-export function createSequence(db,p,draft){
+export function createSequence(db,p,draft,{audited=false}={}){
  assertDraftAllowed(db,p);
  if(db.prepare("SELECT id FROM outreach_sequences WHERE prospect_id=? AND state IN ('Active','En pause')").get(p.id))throw new PolicyError('Une séquence existe déjà pour ce contact. Consultez-la dans Emails.',409);
  const sequenceId=id(),created=date();db.prepare('INSERT INTO outreach_sequences VALUES(?,?,?,?)').run(sequenceId,p.id,'Active',created);
  const first=draft(p),base=`Bonjour${p.contact_name?' '+p.contact_name:''},\n\n`;
- const bodies=[first.body,
+ const bodies=audited?[first.body,
+  base+'Je me permets de revenir vers vous à la suite de mon précédent message au sujet de votre site. Si le point évoqué vous intéresse, je peux vous en dire davantage ou en discuter avec vous.',
+  base+'Je fais suite à mon précédent message. Si le sujet fait partie de vos priorités, un court échange nous permettrait de vérifier ensemble le point évoqué.',
+  base+'Je clôture cet échange faute de retour. Si vous souhaitez reprendre le sujet plus tard, vous pouvez simplement répondre à ce message. Bonne continuation.'
+ ]:[first.body,
   base+`Je me permets de revenir vers vous au sujet de mon message concernant ${p.company}. Souhaitez-vous recevoir les points relevés sur votre présence en ligne ou en discuter lors d’un court échange ?`,
   base+'Je reviens une dernière fois sur les pistes évoquées. Si le sujet est pertinent pour vous, nous pouvons commencer par clarifier votre priorité et les actions utiles à votre activité.',
   base+'Sans retour de votre part, je clôture cette prise de contact et ne prévois plus de relance pour cette démarche. Vous pourrez nous recontacter si le sujet devient pertinent. Bonne continuation.'
  ];
  for(let stage=0;stage<4;stage++){
   const body=stage?bodies[stage]+'\n\nOmniDigital\nhttps://omnidigital.fr\n\nSi vous ne souhaitez plus être contacté, répondez simplement « stop ».':bodies[stage];
-  const subject=stage===0?first.subject:stage===3?`Dernier message de ma part — ${p.company}`:`Re : ${first.subject}`;
+  const subject=stage===0?first.subject:audited?'Re : '+first.subject:stage===3?`Dernier message de ma part — ${p.company}`:`Re : ${first.subject}`;
   db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,sequence_id,sequence_stage,due_at,forecast_at,internal_context) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id(),p.id,subject,body,created,sequenceId,stage,stage===0?created:'',new Date(Date.parse(created)+stage*7*86400000).toISOString(),first.context||'');
  }
  history(db,p.id,'Séquence préparée','Email initial + relances à J+7, J+14 et J+21 à titre indicatif. Chaque relance attend l’envoi confirmé de la précédente et une approbation individuelle.');

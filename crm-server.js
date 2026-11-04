@@ -1,3 +1,4 @@
+import {mountPdfContacts,isPdfContact} from './pdf-contacts.js';
 import {guidedDraft} from './guided-outreach.js';
 import {initDiscovery, DiscoveryService, mountDiscovery, DiscoveryError} from './prospect-discovery.js';
 import {initQualification,QualificationService,mountQualification,readQualificationConfig,QualificationError} from './qualification.js';
@@ -238,6 +239,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
   const discovery=new DiscoveryService({db,fetcher,inspect,digital,qualification});
   app.locals.discovery=discovery;
   mountDiscovery(app,discovery);
+  mountPdfContacts(app,db,parsePdf,transaction);
   app.get('/api/state',(req,res)=>{
     const prospects=db.prepare('SELECT * FROM prospects ORDER BY created DESC').all();
     const messages=db.prepare('SELECT m.*,p.company FROM messages m JOIN prospects p ON p.id=m.prospect_id ORDER BY m.created DESC').all();
@@ -272,8 +274,10 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     const p=db.prepare('SELECT * FROM prospects WHERE id=?').get(id);
     if (!p) throw new InputError('Prospect introuvable.',404);
     if(['update','delete','reconsent'].includes(action)&&db.prepare('SELECT 1 FROM contacts WHERE prospect_id=?').get(id))throw new PolicyError('Utilisez la fiche Contacts structurée. Suppression et levée d’opposition non disponibles dans cette phase.',409);
-    if(action==='sequence'){
-      const sequenceId=transaction(db,()=>createSequence(db,p,draft));return res.status(201).json({sequenceId});
+    const pdfContact=isPdfContact(db,id);
+    if(action==='sequence'||action==='guided-sequence'){
+      const audited=pdfContact||action==='guided-sequence';
+      const sequenceId=transaction(db,()=>createSequence(db,p,audited?prospect=>guidedDraft(db,prospect):draft,{audited}));return res.status(201).json({sequenceId});
     }
     if(action==='reply'){
       const result=transaction(db,()=>registerReply(db,p,req.body?.body,req.body?.scenario,draft));return res.status(201).json(result);
@@ -305,8 +309,9 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
         if(['Pas intéressé','Perdu'].includes(req.body.status)){db.prepare("UPDATE prospects SET next_followup='' WHERE id=?").run(id);stopOutreach(db,id,'Refus commercial / dossier clôturé.');}
         history(db,id,'Changement de statut',p.status+' → '+req.body.status);
       } else if (action==='draft'||action==='guided-draft') {
-        if(action==='draft')assertDraftAllowed(db,p);
-        const {subject,body,context}=action==='guided-draft'?guidedDraft(db,p):draft(p);
+        const audited=pdfContact||action==='guided-draft';
+        if(!audited)assertDraftAllowed(db,p);
+        const {subject,body,context}=audited?guidedDraft(db,p):draft(p);
         db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,internal_context) VALUES(?,?,?,?,?,?)').run(randomUUID().replaceAll('-',''),id,subject,body,now(),context);
       } else if(action==='reconsent'){
         if(req.body?.confirm!==id)throw new PolicyError('Confirmation du nouvel accord requise.');
