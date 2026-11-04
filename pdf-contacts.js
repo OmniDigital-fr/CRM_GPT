@@ -7,8 +7,8 @@ const emailKey=value=>String(value||'').trim().toLowerCase();
 const phoneKey=value=>String(value||'').replace(/\D/g,'').replace(/^33(?=\d{9}$)/,'0');
 const pdfFields={
   name:['Raison sociale','Dénomination sociale','Nom de la société','Société','Entreprise','Nom de l’entreprise','Nom de l\'entreprise','Nom'],
-  siren:['SIREN'],siret:['SIRET'],website:['Site web','Site internet'],address:['Adresse'],
-  postal_code:['Code postal'],city:['Ville','Commune'],industry:['Secteur','Activité'],
+  siren:['SIREN'],siret:['SIRET'],website:['Site web','Site internet','Site'],address:['Adresse'],
+  postal_code:['Code postal'],city:['Ville','Commune'],industry:['Secteur / NAF','Secteur','Activité'],
   display_name:['Dirigeant(e)','Dirigeant','Nom du contact','Contact'],job_title:['Fonction','Poste'],
   email:['Email du contact','Adresse email','Adresse e-mail','Email','E-mail','Courriel'],phone:['Téléphone professionnel','Téléphone','Tél.','Tél'],mobile:['Mobile','Portable']
 };
@@ -17,7 +17,11 @@ const contactFields=new Set(['display_name','job_title','email','phone','mobile'
 const fail=(message,status=400)=>{throw new EntityError(message,status);};
 
 function extractFields(text){
-  const lines=text.split(/\r?\n/);
+  const documentLines=text.split(/\r?\n/);
+  const identity=documentLines.findIndex(line=>/^Identité et coordonnées$/iu.test(line.trim()));
+  const end=identity<0?-1:documentLines.findIndex((line,index)=>index>identity&&
+    /^(?:Audit du site(?:\s|$)|Principaux problèmes|Premier contact(?:\s|$)|Relances?(?:\s|$))/iu.test(line.trim()));
+  const lines=identity<0?documentLines:documentLines.slice(identity+1,end<0?undefined:end);
   const values={};
   for(const [key,labels] of Object.entries(pdfFields)){
     for(const label of labels){
@@ -31,10 +35,32 @@ function extractFields(text){
         const next=lines[index+1]?.trim()||'';
         const nextLabel=next.split(/:|[ \t]{2,}/,1)[0].trim().toLowerCase();
         return next.length<=499&&!knownLabels.has(nextLabel)?next:'';
-      }).filter(value=>value&&!/^(?:[-–—]+|n\/?a|non renseigné|inconnu)$/i.test(value)))];
+      }).filter(value=>value&&!/^(?:[-–—]+|n\/?a|non renseigné|non trouv[ée]e?|non disponible|inconnu)$/i.test(value)))];
       if(matches.length>1)fail('Plusieurs valeurs pour « '+label+' ». Utilisez un PDF pour une seule entreprise.');
       if(matches.length){values[key]=matches[0];break;}
     }
+  }
+  if(!values.name&&identity>=0){
+    values.name=documentLines.slice(0,identity)
+      .map(line=>line.match(/^\s*Prospect\s+\d+\s*[—–-]\s*(.{1,250})$/iu)?.[1].trim())
+      .find(Boolean);
+    if(!values.name)delete values.name;
+  }
+  const combined=lines.map(line=>line.match(/^\s*SIREN\s*\/\s*SIRET(?:\s*:\s*|\s{2,})([\d ]+)\s*\/\s*([\d ]+)\s*$/iu)).find(Boolean);
+  if(combined){
+    values.siren||=combined[1].trim();
+    values.siret||=combined[2].trim();
+  }
+  const location=values.address?.match(/^(.+),\s*(\d{5})\s+(.+)$/u);
+  if(location){
+    values.address=location[1].trim();
+    values.postal_code||=location[2];
+    values.city||=location[3].trim();
+  }
+  const manager=values.display_name?.match(/^(.+?)\s+[—–]\s+(.+)$/u);
+  if(manager){
+    values.display_name=manager[1].trim();
+    values.job_title||=manager[2].trim();
   }
   if(!values.name)fail('Entreprise non identifiée dans le PDF. Utilisez un champ « Entreprise », « Raison sociale » ou « Nom de la société » suivi de sa valeur.');
   if(values.email)values.email=emailKey(values.email);

@@ -504,3 +504,22 @@ test('structured import reads a real PDF with labels above values and a bare web
  assert.equal(saved.status,200);
  assert.ok(saved.data.contact_id);
 });
+
+test('Omni Digital prospect report imports the identity table and ignores the audit and outreach sections',async t=>{
+ const f=await fixture(t,{parsePdf:async()=>[
+  'Prospect 1 — Agence Exemple','Identité et coordonnées','SIREN / SIRET  732829320 / 73282932000074',
+  'Adresse  10 rue Exemple, 78000 Versailles','Secteur / NAF  Immobilier','Dirigeant  Camille Test — Gérante',
+  'Site  https://example.com','Téléphone  01 23 45 67 89','Email  non trouvé',
+  'Audit du site (lecture publique)','Téléphone  INFORMATION À IGNORER','Premier contact (email)','Email  faux@example.com'
+ ].join('\n')});
+ const preview=await previewPdf(f);
+ assert.equal(preview.status,200,JSON.stringify(preview.data));
+ const fields=Object.fromEntries(preview.data.changes.map(field=>[field.key,field.value]));
+ assert.deepEqual(fields,{name:'Agence Exemple',siren:'732829320',siret:'73282932000074',address:'10 rue Exemple',
+  postal_code:'78000',city:'Versailles',industry:'Immobilier',display_name:'Camille Test',job_title:'Gérante',
+  website:'https://example.com',phone:'01 23 45 67 89'});
+ const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.data.token,choices:{}});
+ assert.equal(saved.status,200,JSON.stringify(saved.data));
+ const contact=(await f.request('/api/contacts/'+saved.data.contact_id)).data;
+ assert.equal(contact.email,'');
+});
