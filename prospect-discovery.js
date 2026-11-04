@@ -1,3 +1,4 @@
+import {readEnrichmentConfig,searchProspectWeb} from './prospect-web-search.js';
 import {randomUUID} from 'node:crypto';
 import {isIP} from 'node:net';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -49,7 +50,16 @@ export function initDiscovery(db){
     CREATE INDEX IF NOT EXISTS discovery_candidates_run ON discovery_candidates(run_id);
     CREATE TABLE IF NOT EXISTS discovery_usage(kind TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS discovery_usage_date ON discovery_usage(kind,created_at);
+    CREATE TABLE IF NOT EXISTS discovery_enrichment_runs(
+      run_id TEXT PRIMARY KEY REFERENCES discovery_runs(id) ON DELETE CASCADE,
+      state TEXT NOT NULL, pending TEXT NOT NULL, total INTEGER NOT NULL, error TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS discovery_enrichment_results(
+      candidate_id TEXT PRIMARY KEY REFERENCES discovery_candidates(id) ON DELETE CASCADE,
+      payload TEXT NOT NULL, checked_at TEXT NOT NULL
+    );
   `);
+  db.prepare("UPDATE discovery_enrichment_runs SET state='interrupted' WHERE state='running'").run();
 }
 export function discoveryCriteria(raw){
   if(!raw||typeof raw!=='object'||Array.isArray(raw))fail('Critères invalides.');
@@ -66,7 +76,7 @@ export function discoveryCriteria(raw){
   const limit=raw.limit??10;
   if(!Number.isInteger(limit)||limit<1||limit>25)fail('Choisissez entre 1 et 25 entreprises.');
   if(raw.query!==undefined&&(typeof raw.query!=='string'||raw.query.length>100))fail('Mot-clé invalide.');
-  return {location,area,limit,query:text(raw.query,100),sectors:list('sectors',Object.keys(sectors)),
+  return {location,area,limit,autoEnrich:raw.autoEnrich===true,query:text(raw.query,100),sectors:list('sectors',Object.keys(sectors)),
     sizes:list('sizes',[...Object.keys(sizes),'Taille inconnue']),digital:list('digital',digitalStates),priorities:list('priorities',priorities)};
 }
 function matchesSize(range,selection){
@@ -121,8 +131,13 @@ function registryCompany(row,criteria){
   if(criteria.sectors.length&&!criteria.sectors.some(key=>categories.includes(key)))return null;
   if(!matchesSize(range,criteria.sizes))return null;
   const companySize=range?(Number.isFinite(range[1])?range.join('–'):'10000 et plus'):'';
-  return {...identity,name,legal_name:legalName,industry:categories.join(' / '),naf_code:naf,company_size:companySize,
-    company_status:'Active',country:'France',address:sole?'':text(address.adresse,450),postal_code:text(address.code_postal,5),
+  const responsible=sole||!Array.isArray(row.dirigeants)?[]:row.dirigeants.slice(0,3)
+    .filter(person=>person?.type_dirigeant==='personne physique'&&text(person.nom)&&text(person.qualite))
+    .map(person=>({value:[text(person.prenoms),text(person.nom)].filter(Boolean).join(' '),role:text(person.qualite),
+      source,url:'https://annuaire-entreprises.data.gouv.fr/entreprise/'+identity.siren,collected_at:date(),
+      verified_at:'',confidence:'Moyenne',status:'À vérifier'}));
+  return {...identity,responsible,name,legal_name:legalName,industry:categories.join(' / '),naf_code:naf,company_size:companySize,
+    company_status:'Active',creation_date:/^\d{4}-\d{2}-\d{2}$/.test(row.date_creation||'')?row.date_creation:'',country:'France',address:sole?'':text(address.adresse,450),postal_code:text(address.code_postal,5),
     city:text(address.libelle_commune),region:text(address.region,2),source,
     source_url:'https://annuaire-entreprises.data.gouv.fr/entreprise/'+identity.siren,collected_at:date()};
 }
@@ -146,7 +161,7 @@ async function readRegistry(response){
 }
 function registryUrl(criteria,page){
   const url=new URL(endpoint);
-  url.search=new URLSearchParams({etat_administratif:'A',per_page:'25',page:String(page),minimal:'true',include:'siege,matching_etablissements'});
+  url.search=new URLSearchParams({etat_administratif:'A',per_page:'25',page:String(page)});
   const geo={region:'region',department:'departement',postal:'code_postal'}[criteria.location];
   if(geo)url.searchParams.set(geo,criteria.area);
   const query=criteria.query||(criteria.location==='city'?criteria.area:'');
@@ -165,11 +180,11 @@ function publicSite(value){
   url.search='';
   return url.href;
 }
-function legalPage(page,homepage){
+function linkedPage(page,homepage,pattern){
   const $=load(page.html||'');
   for(const element of $('a[href]').toArray().slice(0,150)){
     const href=$(element).attr('href');
-    if(!/mentions[-_ /]*legales|mentions légales|legal[-_ /]*notice/i.test(href+' '+$(element).text()))continue;
+    if(!pattern.test(href+' '+$(element).text()))continue;
     try{
       const target=new URL(href,homepage);
       if(target.origin===new URL(homepage).origin&&target.href!==homepage)return publicSite(target.href);
@@ -177,6 +192,7 @@ function legalPage(page,homepage){
   }
   return '';
 }
+const legalPage=(page,homepage)=>linkedPage(page,homepage,/mentions[-_ /]*legales|mentions légales|legal[-_ /]*notice/i);
 function generalChannels(page,website){
   const $=load(page.html||'');
   const result={};
@@ -201,8 +217,10 @@ function identityOnPage(page,company){
   return new RegExp('(?:^|[^0-9])(?:'+siret+'|'+pattern+')(?![\\s.\\-]*[0-9])').test(visible);
 }
 export class DiscoveryService {
-  constructor({db,fetcher=fetch,inspect=inspectWebsite,digital,qualification,runner=runDigitalAudit}){
-    Object.assign(this,{db,fetcher,inspect,digital,qualification,runner});
+  constructor({db,fetcher=fetch,inspect=inspectWebsite,digital,qualification,runner=runDigitalAudit,enrichment=readEnrichmentConfig()}){
+    Object.assign(this,{db,fetcher,inspect,digital,qualification,runner,enrichment});
+    this.enrichmentJob=null;
+    this.closed=false;
     this.searches=new Map();
     this.candidateJobs=new Set();
   }
@@ -210,7 +228,7 @@ export class DiscoveryService {
     const limit=new Date(Date.now()-30*DAY).toISOString();
     this.db.prepare("UPDATE discovery_runs SET state='interrupted',finished_at=?,error='Recherche interrompue.' WHERE state='running' AND created_at<?").run(date(),new Date(Date.now()-120000).toISOString());
     this.db.prepare("DELETE FROM discovery_runs WHERE created_at<? AND state<>'running'").run(limit);
-    this.db.prepare('DELETE FROM discovery_usage WHERE created_at<?').run(limit);
+    this.db.prepare('DELETE FROM discovery_usage WHERE created_at<?').run(new Date(Date.now()-32*DAY).toISOString());
   }
   consume(kind,limit){
     const since=new Date(Date.now()-DAY).toISOString();
@@ -221,6 +239,8 @@ export class DiscoveryService {
   }
   start(raw){
     const criteria=discoveryCriteria(raw), id=randomUUID(), controller=new AbortController();
+    if(criteria.autoEnrich&&(!this.enrichment.enabled||!this.enrichment.key||this.enrichmentJob||this.candidateJobs.size))
+      fail('La recherche web est désactivée ou un enrichissement est déjà en cours.',409);
     this.prune();
     transaction(this.db,()=>{
       if(this.db.prepare("SELECT 1 FROM discovery_runs WHERE state='running'").get())fail('Une recherche est déjà en cours.',429);
@@ -231,7 +251,7 @@ export class DiscoveryService {
     return {id,state:'running'};
   }
   async search(id,criteria,signal){
-    const seen=new Set();
+    const seen=new Set(), candidateIds=[];
     try{
       for(let page=1;page<=4&&seen.size<criteria.limit;page++){
         if(signal.aborted)break;
@@ -247,13 +267,22 @@ export class DiscoveryService {
         for(const row of payload.results){
           const company=registryCompany(row,criteria);
           if(!company||seen.has(company.siren))continue;
-          insert.run(randomUUID(),id,JSON.stringify(company));
+          if(company.responsible.length&&this.opposed(company,this.duplicates(company,{})))company.responsible=[];
+          const candidateId=randomUUID();
+          insert.run(candidateId,id,JSON.stringify(company));
+          candidateIds.push(candidateId);
           seen.add(company.siren);
           if(seen.size===criteria.limit)break;
         }
         if(!payload.results.length||(Number.isInteger(payload.total_pages)?page>=payload.total_pages:payload.results.length<25))break;
       }
       this.finish(id,signal.aborted?'cancelled':'completed');
+      if(!this.closed&&!signal.aborted&&criteria.autoEnrich&&candidateIds.length){
+        const ids=candidateIds.slice(0,this.enrichment.batch);
+        if(!this.enrichmentJob&&!this.candidateJobs.size)this.startEnrichment(id,{ids});
+        else this.db.prepare("INSERT INTO discovery_enrichment_runs VALUES(?,'interrupted',?,?,?)")
+          .run(id,JSON.stringify(ids),ids.length,'Autre opération en cours. Reprenez ce lot manuellement.');
+      }
     }catch(error){
       this.finish(id,signal.aborted?'cancelled':'failed',signal.aborted?'':error instanceof DiscoveryError?error.message:'Recherche interrompue : source indisponible ou délai dépassé.');
     }
@@ -268,6 +297,11 @@ export class DiscoveryService {
     return {ok:true};
   }
   async close(){
+    this.closed=true;
+    if(this.enrichmentJob){
+      this.enrichmentJob.controller.abort();
+      await this.enrichmentJob.work;
+    }
     for(const [id] of this.searches)this.cancel(id);
     await Promise.allSettled([...this.searches.values()].map(job=>job.work));
   }
@@ -320,7 +354,11 @@ export class DiscoveryService {
     if(scores.services.some(item=>item.code==='seo'))signals.push({label:'SEO',reason:'Contrôles SEO documentés dans l’audit.'});
     if(hasIssues)signals.push({label:'Site à moderniser',reason:'Points d’amélioration observés. L’ancienneté du site reste inconnue.'});
     if(digital==='Aucun site identifié'||digital==='Site inaccessible')signals.push({label:'Présence digitale',reason:'Disponibilité ou présence du site à vérifier.'});
-    return {...row,audit:audit?{state:audit.execution_status,conclusions:audit.conclusions||[],controls:audit.controls||[]}:null,
+    const saved=this.db.prepare('SELECT payload FROM discovery_enrichment_results WHERE candidate_id=?').get(row.id);
+    const enrichment=saved?parse(saved.payload):null;
+    const completeness=Math.round(100*[company.siren&&company.name,company.company_status,verification.confirmed,
+      verification.channels?.phone,verification.channels?.email,company.responsible?.length,audit||row.review.length].filter(Boolean).length/7);
+    return {...row,company:restricted?{...company,responsible:[]}:company,enrichment:restricted?null:enrichment,completeness,audit:audit?{state:audit.execution_status,conclusions:audit.conclusions||[],controls:audit.controls||[]}:null,
       duplicates,restricted,scores,digital,signals};
   }
   view(id){
@@ -333,7 +371,7 @@ export class DiscoveryService {
       approved:count(row=>row.decision==='approved'||row.decision==='imported'),rejected:count(row=>row.decision==='rejected'),imported:count(row=>row.decision==='imported')};
     const preferred=row=>row.signals.filter(signal=>run.criteria.priorities.includes(signal.label)).length;
     results.sort((a,b)=>preferred(b)-preferred(a)||(b.scores.fit.score??-1)-(a.scores.fit.score??-1));
-    return {...run,results,stats};
+    return {...run,results,stats,enrichment:this.enrichmentStatus(id),webSearch:!!(this.enrichment.enabled&&this.enrichment.key),batchLimit:this.enrichment.batch};
   }
   history(){
     this.prune();
@@ -375,49 +413,241 @@ export class DiscoveryService {
     if(row.decision==='imported')fail('Fiche déjà importée.',409);
     const value=raw?.url;
     if(typeof value!=='string')fail('Adresse de site invalide.');
-    if(this.candidateJobs.size)fail('Une vérification ou un audit est déjà en cours.',429);
+    if(this.candidateJobs.size||this.enrichmentJob)fail('Une vérification ou un audit est déjà en cours.',429);
     this.candidateJobs.add(id);
     try{
       let verification={status:'unidentified',confirmed:false,checked_at:date()};
       if(value.trim()){
         const url=publicSite(value);
         if(row.verification.requested===url&&Date.now()-Date.parse(row.verification.checked_at)<DAY)return row.verification;
-        this.consume('website',20);
-        verification={...verification,requested:url,status:'unreachable'};
-        let page;
-        const deadline=Date.now()+8000,budget={remaining:5};
-        try{page=await this.inspect(url,{deadline,budget});}catch(error){
-          if(error?.status===400&&/locales|privées|réservées|non autorisée/.test(error.message))throw error;
-        }
-        if(page){
-          const homepage=publicSite(page.url);
-          let proof=identityOnPage(page,row.company)?homepage:'';
-          if(!proof&&page.status>=200&&page.status<300&&/html/i.test(page.contentType||'')){
-            const legal=legalPage(page,homepage);
-            if(legal){
-              try{
-                const candidate=await this.inspect(legal,{deadline,budget});
-                if(domain(candidate.url)===domain(homepage)&&identityOnPage(candidate,row.company))proof=publicSite(candidate.url);
-              }catch(error){
-                if(error?.status===400&&/locales|privées|réservées|non autorisée/.test(error.message))throw error;
-              }
-            }
-          }
-          const confirmed=!!proof;
-          verification={...verification,status:confirmed?'confirmed':page.status>=200&&page.status<300?'unconfirmed':'unreachable',
-            confirmed,url:homepage,proof_url:proof,http_status:page.status,channels:confirmed?generalChannels(page,homepage):{},
-            evidence:confirmed?'SIREN ou SIRET trouvé dans le texte public de la page.':'Correspondance de l’entreprise non établie sur cette page.'};
-        }
+        verification=await this.probeWebsite(row,url);
       }
       this.db.prepare("UPDATE discovery_candidates SET verification=?,audit=NULL,audit_at=NULL,decision='pending' WHERE id=?").run(JSON.stringify(verification),id);
       return verification;
     }finally{this.candidateJobs.delete(id);}
   }
+  async probeWebsite(row,url,{expanded=false}={}){
+    this.consume('website',20);
+    let verification={checked_at:date(),confirmed:false,requested:url,status:'unreachable'};
+    let page;
+    const deadline=Date.now()+8000,budget={remaining:5};
+    const guard=expanded?target=>domain(target.href)===domain(url):undefined;
+    try{page=await this.inspect(url,{deadline,budget,allowRedirect:guard});}catch(error){
+      if(error?.status===400&&/locales|privées|réservées|non autorisée/.test(error.message))throw error;
+    }
+    if(page){
+      const homepage=publicSite(page.url);
+      let proof=identityOnPage(page,row.company)?homepage:'';
+      let legalContent;
+      if(!proof&&page.status>=200&&page.status<300&&/html/i.test(page.contentType||'')){
+        const legal=legalPage(page,homepage);
+        if(legal){
+          try{
+            const candidate=await this.inspect(legal,{deadline,budget,allowRedirect:guard});
+            if(domain(candidate.url)===domain(homepage)&&identityOnPage(candidate,row.company)){proof=publicSite(candidate.url);legalContent=candidate;}
+          }catch(error){
+            if(error?.status===400&&/locales|privées|réservées|non autorisée/.test(error.message))throw error;
+          }
+        }
+      }
+      const confirmed=!!proof;
+      const channels=confirmed?generalChannels(page,homepage):{};
+      const fields={};
+      const record=(key,value,source,status='Confirmé')=>{if(value)fields[key]={value,source:'Site officiel',url:source,collected_at:date(),verified_at:date(),confidence:status==='Confirmé'?'Élevée':'Moyenne',status};};
+      if(confirmed){
+        const restricted=(key,value)=>suppressed(this.db,{[key]:value})||restrictedIdentity(this.db,{[key]:value});
+        for(const [key,value] of Object.entries(channels)){
+          if(restricted(key,value))delete channels[key];
+          else record(key,value,homepage);
+        }
+        record('website',homepage,proof);
+        const contact=linkedPage(page,homepage,/(?:^|[\s/])(?:contact|nous contacter)(?:[\s/.?#-]|$)/i);
+        const about=linkedPage(page,homepage,/à propos|a-propos|qui sommes-nous|qui-sommes-nous/i);
+        const sources=[legalContent].filter(Boolean);
+        const $=load(page.html||'');
+        for(const href of $('a[href]').toArray().slice(0,150).map(element=>$(element).attr('href'))){
+          try{
+            const url=siteUrl(href);
+            if(url.hostname.replace(/^www\./,'')==='linkedin.com'&&/^\/company\/[^/]+/.test(url.pathname)){
+              url.search='';record('linkedin',url.href,homepage,'À vérifier');break;
+            }
+          }catch{/* Links outside the supported profile format are ignored. */}
+        }
+        if(contact&&expanded){
+          try{
+            const contactPage=await this.inspect(contact,{deadline,budget,allowRedirect:guard});
+            if(domain(contactPage.url)===domain(homepage)&&contactPage.status>=200&&contactPage.status<300&&/html/i.test(contactPage.contentType||'')){
+              sources.push(contactPage);
+              record('contact',publicSite(contactPage.url),homepage);
+              if(load(contactPage.html||'')('form').length)record('form','Formulaire HTML repéré',publicSite(contactPage.url));
+            }
+          }catch{/* Keep confirmed identity when a secondary page is unavailable. */}
+        }
+        if(about)record('about',about,homepage,'À vérifier');
+        if(contact&&!fields.contact)record('contact',contact,homepage,'À vérifier');
+        for(const source of sources){
+          for(const [key,value] of Object.entries(generalChannels(source,homepage))){
+            if(restricted(key,value))continue;
+            if(channels[key]&&channels[key]!==value){
+              fields[key].alternatives=[...(fields[key].alternatives||[]),{value,url:publicSite(source.url)}];
+              fields[key].status='À vérifier';
+            }else if(!channels[key]){
+              channels[key]=value;record(key,value,publicSite(source.url));
+            }
+          }
+        }
+        for(const key of ['email','phone'])if(fields[key]?.alternatives)delete channels[key];
+      }
+      verification={...verification,status:confirmed?'confirmed':page.status>=200&&page.status<300?'unconfirmed':'unreachable',
+        confirmed,url:homepage,proof_url:proof,http_status:page.status,channels,fields,
+        evidence:confirmed?'SIREN ou SIRET trouvé dans le texte public de la page.':'Correspondance de l’entreprise non établie sur cette page.'};
+    }
+    return verification;
+  }
+  recordAssisted(id,raw){
+    const row=this.candidate(id);
+    if(['imported','rejected'].includes(row.decision)||this.candidateJobs.has(id)||
+        this.opposed(row.company,this.duplicates(row.company,row.verification)))fail('Fiche indisponible pour la revue.',409);
+    const key=raw?.field;
+    const url=publicSite(raw?.url);
+    let value=text(raw?.value,250);
+    if(key==='email')value=value.toLowerCase();
+    if(key==='phone')value=value.replace(/[ .()-]/g,'').replace(/^\+33/,'0');
+    if(!(key==='email'&&/^(?:contact|info|accueil|standard|bonjour|hello)@[a-z0-9.-]+\.[a-z]{2,}$/i.test(value)||
+         key==='phone'&&/^0[1-59]\d{8}$/.test(value)))fail('Indiquez une adresse générique ou un numéro de standard publié.');
+    if(suppressed(this.db,{[key]:value})||restrictedIdentity(this.db,{[key]:value}))fail('Coordonnée écartée par les règles d’opposition.',409);
+    const saved=this.db.prepare('SELECT payload,checked_at FROM discovery_enrichment_results WHERE candidate_id=?').get(id);
+    const result=saved?parse(saved.payload):{};
+    result.assisted={...result.assisted,[key]:{value,url,source:'Consultation manuelle',collected_at:date(),verified_at:'',
+      confidence:'Moyenne',status:'À vérifier'}};
+    this.db.prepare(`INSERT INTO discovery_enrichment_results VALUES(?,?,?)
+      ON CONFLICT(candidate_id) DO UPDATE SET payload=excluded.payload`).run(id,JSON.stringify(result),saved?.checked_at||'');
+    return {ok:true};
+  }
+  enrichmentStatus(id){
+    const row=this.db.prepare('SELECT * FROM discovery_enrichment_runs WHERE run_id=?').get(id);
+    return row?{state:row.state,total:row.total,done:row.total-parse(row.pending).length,error:row.error}:null;
+  }
+  startEnrichment(id,raw){
+    const run=this.run(id);
+    if(run.state==='running')fail('Attendez la fin de la recherche.',409);
+    if(this.enrichmentJob||this.candidateJobs.size)fail('Une opération est déjà en cours.',429);
+    if(raw?.resume===true){
+      const saved=this.db.prepare('SELECT pending,state FROM discovery_enrichment_runs WHERE run_id=?').get(id);
+      if(!saved||!['interrupted','cancelled','failed'].includes(saved.state)||!parse(saved.pending).length)fail('Aucun enrichissement à reprendre.',409);
+      this.db.prepare("UPDATE discovery_enrichment_runs SET state='running',error='' WHERE run_id=?").run(id);
+    }else{
+      const ids=raw?.ids;
+      if(!Array.isArray(ids)||!ids.length||ids.length>this.enrichment.batch||new Set(ids).size!==ids.length||
+          ids.some(key=>typeof key!=='string'||this.candidate(key).run_id!==id))fail('Sélection invalide.');
+      this.db.prepare(`INSERT INTO discovery_enrichment_runs VALUES(?,'running',?,?,'')
+        ON CONFLICT(run_id) DO UPDATE SET state='running',pending=excluded.pending,total=excluded.total,error=''`).run(id,JSON.stringify(ids),ids.length);
+    }
+    const controller=new AbortController();
+    const work=Promise.resolve().then(()=>this.enrichBatch(id,controller.signal)).finally(()=>{this.enrichmentJob=null;});
+    this.enrichmentJob={id,controller,work};
+    return this.enrichmentStatus(id);
+  }
+  cancelEnrichment(id){
+    if(this.enrichmentJob?.id!==id)fail('Aucun enrichissement en cours.',409);
+    this.enrichmentJob.controller.abort();
+    return {ok:true};
+  }
+  async enrichBatch(id,signal){
+    const pending=parse(this.db.prepare('SELECT pending FROM discovery_enrichment_runs WHERE run_id=?').get(id).pending);
+    let state='completed',error='';
+    try{
+      while(pending.length&&!signal.aborted){
+        const key=pending[0];
+        this.candidateJobs.add(key);
+        try{await this.enrichCandidate(key,signal);}finally{this.candidateJobs.delete(key);}
+        if(signal.aborted)break;
+        pending.shift();
+        this.db.prepare('UPDATE discovery_enrichment_runs SET pending=? WHERE run_id=?').run(JSON.stringify(pending),id);
+      }
+    }catch(cause){
+      state='failed';
+      error=cause instanceof DiscoveryError?cause.message:'Enrichissement indisponible. Réessayez plus tard.';
+    }finally{
+      this.db.prepare('UPDATE discovery_enrichment_runs SET state=?,error=? WHERE run_id=?')
+        .run(signal.aborted?'cancelled':state,signal.aborted?'':error,id);
+    }
+  }
+  async enrichCandidate(id,signal){
+    const row=this.candidate(id);
+    if(['imported','rejected'].includes(row.decision)||this.opposed(row.company,this.duplicates(row.company,row.verification)))return;
+    const cached=this.db.prepare('SELECT payload,checked_at FROM discovery_enrichment_results WHERE candidate_id=?').get(id);
+    if(cached&&Date.now()-Date.parse(cached.checked_at)<DAY)return;
+    let options=[],verification=null,status='not_found';
+    if(row.verification.confirmed){
+      verification=await this.probeWebsite(row,row.verification.url,{expanded:true});
+      if(!verification.confirmed)verification=null;
+      status='confirmed';
+    }else if(this.enrichment.enabled&&this.enrichment.key){
+      transaction(this.db,()=>{
+        const since=date().slice(0,7)+'-01';
+        const count=this.db.prepare("SELECT count(*) n FROM discovery_usage WHERE kind='web-search' AND created_at>=?").get(since).n;
+        if(count>=this.enrichment.monthly)fail('Quota mensuel local de recherche web atteint.',429);
+        this.db.prepare("INSERT INTO discovery_usage VALUES('web-search',?)").run(date());
+      });
+      let urls;
+      try{urls=await searchProspectWeb(row.company,{key:this.enrichment.key,fetcher:this.fetcher,signal});}
+      catch(cause){fail(cause.status===429?'Quota du fournisseur web atteint.':'Fournisseur de recherche web indisponible. Réessayez plus tard.',502);}
+      const seen=new Set();
+      for(const value of urls){
+        if(signal.aborted||seen.size>=3)break;
+        let url;
+        try{url=publicSite(value);}catch{continue;}
+        const host=domain(url);
+        if(seen.has(host)||/(^|\.)(pagesjaunes\.fr|societe\.com|gouv\.fr|linkedin\.com|facebook\.com|instagram\.com|pappers\.fr|google\.com|google\.fr)$/.test(host))continue;
+        seen.add(host);
+        try{
+          const candidate=await this.probeWebsite(row,url,{expanded:true});
+          if(candidate.url&&!options.some(item=>domain(item.url)===domain(candidate.url)))options.push(candidate);
+        }catch(cause){if(cause instanceof DiscoveryError&&cause.status===429)throw cause;}
+      }
+      const confirmed=options.filter(item=>item.confirmed);
+      verification=confirmed.length===1?confirmed[0]:null;
+      status=verification?'confirmed':options.length?'review':'not_found';
+    }else{
+      // Configuration is optional and can be supplied after the first review.
+      return;
+    }
+    if(signal.aborted)return;
+    transaction(this.db,()=>{
+      if(verification&&this.opposed(row.company,this.duplicates(row.company,verification)))return;
+      if(verification){
+        if(row.verification.confirmed&&domain(row.verification.url)===domain(verification.url)){
+          for(const key of ['email','phone']){
+            const prior=row.verification.channels?.[key], next=verification.channels[key];
+            if(!prior||suppressed(this.db,{[key]:prior})||restrictedIdentity(this.db,{[key]:prior}))continue;
+            const priorEvidence=row.verification.fields?.[key]||{value:prior,url:row.verification.url,
+              source:'Site officiel',collected_at:row.verification.checked_at,verified_at:row.verification.checked_at,
+              confidence:'Élevée',status:'Confirmé'};
+            if(!verification.fields[key]){
+              verification.fields[key]=priorEvidence;
+              verification.channels[key]=prior;
+            }else if(next&&next!==prior){
+              verification.fields[key]={...priorEvidence,status:'À vérifier',
+                alternatives:[{value:next,url:verification.fields[key].url}]};
+              delete verification.channels[key];
+            }
+          }
+        }
+        const keepAudit=row.verification.confirmed&&row.verification.url===verification.url;
+        this.db.prepare("UPDATE discovery_candidates SET verification=?,audit=?,audit_at=?,decision='pending' WHERE id=?")
+          .run(JSON.stringify(verification),keepAudit&&row.audit?JSON.stringify(row.audit):null,keepAudit?row.audit_at:null,id);
+      }
+      this.db.prepare(`INSERT INTO discovery_enrichment_results VALUES(?,?,?)
+        ON CONFLICT(candidate_id) DO UPDATE SET payload=excluded.payload,checked_at=excluded.checked_at`).run(id,
+        JSON.stringify({assisted:cached?parse(cached.payload).assisted:undefined,status,options:options.map(item=>({url:item.url,confirmed:item.confirmed,proof_url:item.proof_url})),checked_at:date()}),date());
+    });
+  }
   async audit(id){
     const row=this.candidate(id);
     if(!row.verification.confirmed||row.decision==='imported')fail('Vérifiez d’abord le site de ce prospect.');
     if(row.audit&&Date.now()-Date.parse(row.audit_at)<7*DAY)return {cached:true};
-    if(this.candidateJobs.size)fail('Une vérification ou un audit est déjà en cours.',429);
+    if(this.candidateJobs.size||this.enrichmentJob)fail('Une vérification ou un audit est déjà en cours.',429);
     this.candidateJobs.add(id);
     try{
       const result=await this.digital.legacyAudit(()=>{
@@ -446,7 +676,10 @@ export class DiscoveryService {
       const data={...row.company,website,general_email:channels.email||'',general_phone:channels.phone||'',information_status:'À vérifier',
         verification_notes:'Identité et activité : '+row.company.source_url+' ('+row.company.collected_at+'). '+
           (website?'Site : '+website+' ('+row.verification.checked_at+'), '+row.verification.evidence+' '+row.verification.proof_url:'Site à vérifier.')+
-          (channels.email||channels.phone?' Coordonnées générales publiées sur '+website+'.':'')+
+          Object.keys(channels).filter(key=>['email','phone'].includes(key)).map(key=>{
+            const evidence=row.verification.fields?.[key];
+            return ' '+(key==='email'?'Email général':'Téléphone général')+' publié sur '+(evidence?.url||website)+' ('+(evidence?.verified_at||row.verification.checked_at)+').';
+          }).join('')+
           row.review.map(item=>'\nIndice à vérifier — '+item.label+' : '+item.reason+' ('+item.url+', '+item.observed_at+').').join('')};
       const saved=saveCompany(this.db,data);
       if(row.audit&&website){
@@ -462,11 +695,14 @@ export class DiscoveryService {
 }
 export function mountDiscovery(app,service){
   const base='/api/discovery';
-  app.get(base+'/runs',(req,res)=>res.json({runs:service.history(),sectors:Object.keys(sectors),sizes:[...Object.keys(sizes),'Taille inconnue'],digital:digitalStates,priorities,gemini:!!service.qualification?.status().configured}));
+  app.get(base+'/runs',(req,res)=>res.json({runs:service.history(),sectors:Object.keys(sectors),sizes:[...Object.keys(sizes),'Taille inconnue'],digital:digitalStates,priorities,webSearch:!!(service.enrichment.enabled&&service.enrichment.key),gemini:!!service.qualification?.status().configured}));
   app.post(base+'/runs',(req,res)=>res.status(202).json(service.start(req.body)));
   app.get(base+'/runs/:id',(req,res)=>res.json(service.view(req.params.id)));
+  app.post(base+'/runs/:id/enrich',(req,res)=>res.status(202).json(service.startEnrichment(req.params.id,req.body)));
+  app.post(base+'/runs/:id/enrich/cancel',(req,res)=>res.json(service.cancelEnrichment(req.params.id)));
   app.post(base+'/runs/:id/cancel',(req,res)=>res.json(service.cancel(req.params.id)));
   app.post(base+'/candidates/:id/decision',(req,res)=>res.json(service.decision(req.params.id,req.body)));
+  app.post(base+'/candidates/:id/assisted',(req,res)=>res.json(service.recordAssisted(req.params.id,req.body)));
   app.post(base+'/candidates/:id/signal',(req,res)=>res.json(service.reviewSignal(req.params.id,req.body)));
   app.post(base+'/candidates/:id/verify',async(req,res)=>res.json(await service.verify(req.params.id,req.body)));
   app.post(base+'/candidates/:id/audit',async(req,res)=>res.json(await service.audit(req.params.id)));

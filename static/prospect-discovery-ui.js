@@ -27,7 +27,7 @@ async function loadDiscoveryRun(id,{history=false}={}){
   discoveryRun=run;
   render();
   clearTimeout(discoveryPoll);
-  if(run.state==='running')discoveryPoll=setTimeout(()=>{
+  if(run.state==='running'||run.enrichment?.state==='running')discoveryPoll=setTimeout(()=>{
     if(view==='discovery')loadDiscoveryRun(id).catch(error=>notice(error.message));
   },1300);
   else if(!history){
@@ -48,6 +48,34 @@ function discoveryFilters(criteria){
   <details><summary>Présence digitale et critères commerciaux</summary>
   <p>Filtres de résultats, disponibles après vérification du site</p><div class="discovery-options">${discoveryChoices('digital',discoveryMeta.digital,criteria.digital)}</div>
   <p>Indices à prioriser</p><div class="discovery-options">${discoveryChoices('priorities',discoveryMeta.priorities,criteria.priorities)}</div></details>`;
+}
+const enrichmentFields={website:'Site officiel',email:'Email général',phone:'Téléphone général',contact:'Page de contact',about:'Présentation',form:'Formulaire',linkedin:'Page LinkedIn',responsible:'Dirigeant déclaré'};
+function enrichmentDetail(row){
+  if(row.restricted)return '';
+  const c=row.company, e=row.enrichment;
+  const evidence=[...Object.entries(row.verification.fields||{}),
+    ...Object.entries(e?.assisted||{}),...(c.responsible||[]).map(person=>['responsible',person])];
+  const lines=evidence.map(([key,entry])=>`<li><strong>${esc(enrichmentFields[key])}</strong> · ${esc(entry.value)} ${esc(entry.role||'')}
+    · ${esc(entry.status)} · Confiance ${esc(entry.confidence)}
+    · <a href="${esc(entry.url)}" target="_blank" rel="noopener noreferrer">${esc(entry.source)}</a>
+    · Collecte ${esc(discoveryDate(entry.collected_at))}${entry.verified_at?' · Vérification '+esc(discoveryDate(entry.verified_at)):''}
+    ${(entry.alternatives||[]).map(item=>`<br>Autre valeur : ${esc(item.value)} · <a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Source</a>`).join('')}</li>`).join('');
+  const pj='https://www.pagesjaunes.fr/annuaire/chercherlespros?'+new URLSearchParams({quoiqui:c.name,ou:c.city});
+  const societe='https://www.societe.com/cgi-bin/search?'+new URLSearchParams({champs:c.siren});
+  const missing=['website','phone','email','responsible'].filter(key=>!evidence.some(([field])=>field===key));
+  return `<h4>Enrichissement · Complétude ${row.completeness}%</h4>
+    ${lines?`<ul>${lines}</ul>`:''}
+    ${missing.length?`<p>Données introuvables ou non recherchées : ${missing.map(key=>enrichmentFields[key]).join(', ')}.</p>`:''}
+    ${e?.status==='not_found'?'<p>Aucun site identifié dans l’échantillon.</p>':''}
+    ${e?.status==='review'?'<p>Domaines à vérifier avant de choisir un site :</p><ul>'+e.options.map(item=>`<li><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.url)}</a> · ${item.confirmed?'Identifiant repéré':'Identité non établie'}</li>`).join('')+'</ul>':''}
+    ${row.imported_id||row.decision==='rejected'?'':`
+    <button type="button" data-discovery-action="enrich-one" data-candidate="${esc(row.id)}" ${discoveryRun.enrichment?.state==='running'?'disabled':''}>Enrichir automatiquement</button>
+    <p>Consultation assistée · <a href="${esc(pj)}" target="_blank" rel="noopener noreferrer">PagesJaunes</a> · <a href="${esc(societe)}" target="_blank" rel="noopener noreferrer">Société.com</a></p>
+    <form data-discovery-assisted="${esc(row.id)}"><div class="form-grid">
+      <label>Coordonnée générale<select name="field"><option value="email">Email</option><option value="phone">Téléphone</option></select></label>
+      <label>Valeur publiée<input name="value" required maxlength="250"></label>
+      <label>URL source<input name="url" type="url" required maxlength="2048"></label>
+    </div><button>Consigner pour vérification</button></form>`}`;
 }
 function discoveryCandidate(row){
   const c=row.company,v=row.verification,s=row.scores;
@@ -78,7 +106,7 @@ function discoveryCandidate(row){
   return `<div class="panel discovery-record">
     <h3>${esc(c.name)}</h3>
     <p>${esc(c.legal_name)} · SIREN ${esc(c.siren)} · SIRET ${esc(c.siret||'—')} · NAF ${esc(c.naf_code||'—')} · Effectif ${esc(c.company_size||'inconnu')}</p>
-    <p>${esc(c.address)} · ${esc(c.postal_code)} ${esc(c.city)} · Région ${esc(c.region||'—')} · Activité déclarée ${esc(c.company_status)}</p>
+    <p>${esc(c.address)} · ${esc(c.postal_code)} ${esc(c.city)} · Région ${esc(c.region||'—')} · Activité déclarée ${esc(c.company_status)} · Création ${esc(c.creation_date||'—')}</p>
     <p>Identité et établissement collectés le ${esc(discoveryDate(c.collected_at))}. <a href="${esc(c.source_url)}" target="_blank" rel="noopener noreferrer">${esc(c.source)}</a></p>
     <p>Site : ${esc(row.digital)} ${v.url?`· <a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.url)}</a>`:''}
     ${v.checked_at?'· '+esc(discoveryDate(v.checked_at)):''} ${esc(v.evidence||'')}
@@ -86,6 +114,7 @@ function discoveryCandidate(row){
     ${v.channels?.email||v.channels?.phone?`<p>Coordonnées générales publiées sur le site vérifié · ${esc([v.channels.email,v.channels.phone].filter(Boolean).join(' · '))}</p>`:''}
     ${row.restricted?'<p class="duplicate-warning">Opposition détectée. L’import est bloqué.</p>':''}
     ${match?`<h4>Correspondances à vérifier</h4><ul>${match}</ul>`:''}
+    ${enrichmentDetail(row)}
     <h4>Qualification locale</h4>
     <p>Fit ${s.fit.score??'—'} · Need ${s.need.score??'—'} · Intent ${esc(s.intent.label)} · ${esc(s.priority)}</p>
     <p>${esc(s.priority_reason)}</p>
@@ -103,7 +132,7 @@ function discoveryResults(run){
   const filters=run.criteria.digital;
   const visible=discoveryShowAll||!filters.length?run.results:run.results.filter(row=>
     filters.includes(row.digital)||(filters.includes('Site web existant')&&row.verification.confirmed));
-  const stats=run.stats;
+  const stats=run.stats, batch=run.enrichment;
   return `<section class="panel"><div class="panel-heading"><h2>Résultats</h2><span class="badge">${esc(discoveryLabels[run.state]||run.state)}</span></div>
     <p>${stats.found} trouvés · ${stats.verified} sites vérifiés · ${stats.duplicates} doublons possibles · ${stats.approved} approuvés · ${stats.rejected} rejetés · ${stats.imported} importés · ${run.requests} appels source · ${run.source_count} lignes reçues du registre</p>
     ${run.state==='completed'&&!visible.length?`<p>${stats.found
@@ -113,16 +142,23 @@ function discoveryResults(run){
     ${run.error?`<p role="alert">${esc(run.error)}</p>`:''}
     ${run.state==='running'?'<button data-discovery-action="cancel">Arrêter la recherche</button>':''}
     ${filters.length?`<button data-discovery-action="toggle">${discoveryShowAll?'Appliquer le filtre digital':'Afficher tous les résultats pour vérification'}</button>`:''}
+    ${!run.webSearch?'<p>Recherche web désactivée. Vérifiez un site manuellement ou utilisez la consultation assistée.</p>':''}
+    ${batch?`<p role="status">Enrichissement · ${esc(discoveryLabels[batch.state])} · ${batch.done}/${batch.total} ${esc(batch.error)}</p>`:''}
+    ${batch?.state==='running'?'<button data-discovery-action="enrich-cancel">Arrêter l’enrichissement</button>':''}
+    ${batch&&['cancelled','failed','interrupted'].includes(batch.state)?'<button data-discovery-action="enrich-resume">Reprendre l’enrichissement</button>':''}
     <form id="discovery-import">
-    <div class="table-wrap"><table><thead><tr><th>Import</th><th>Entreprise</th><th>Secteur</th><th>Site / vérification</th><th>Fit</th><th>Need</th><th>Priorité / services</th><th>Décision</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th>Import</th><th>Enrichir</th><th>Entreprise</th><th>Secteur</th><th>Site / vérification</th><th>Coordonnées / complétude</th><th>Fit</th><th>Need</th><th>Priorité / services</th><th>Décision</th></tr></thead><tbody>
     ${visible.map(row=>`<tr>
       <td>${row.decision==='approved'?`<input type="checkbox" name="ids" value="${esc(row.id)}" aria-label="Sélectionner ${esc(row.company.name)}">`:'—'}</td>
+      <td>${!row.imported_id&&row.decision!=='rejected'&&!row.restricted?`<input type="checkbox" name="enrich" value="${esc(row.id)}" aria-label="Enrichir ${esc(row.company.name)}">`:'—'}</td>
       <td><button type="button" data-discovery-action="detail" data-candidate="${esc(row.id)}">${esc(row.company.name)}</button><br>${esc(row.company.city)} · <a href="${esc(row.company.source_url)}" target="_blank" rel="noopener noreferrer">Annuaire</a></td>
       <td>${esc(row.company.industry||row.company.naf_code||'Inconnu')}</td><td>${esc(row.digital)} ${row.verification.confirmed?`<br><a href="${esc(row.verification.url)}" target="_blank" rel="noopener noreferrer">Site confirmé</a>`:''}</td>
+      <td>${esc([row.verification.channels?.phone,row.verification.channels?.email,row.restricted?'':row.company.responsible?.[0]?.value].filter(Boolean).join(' · ')||'—')}<br>${row.completeness}%</td>
       <td>${row.scores.fit.score??'—'}</td><td>${row.scores.need.score??'—'}</td><td>${esc(row.scores.priority)}<br>${esc(row.scores.services.map(s=>s.name).join(', '))}</td>
       <td>${esc(discoveryLabels[row.decision])}${row.duplicates.length&&!row.imported_id?' · doublon possible':''}</td>
-    </tr>`).join('')||'<tr><td colspan="8">Aucun résultat pour ces critères. Les sites inconnus restent consultables.</td></tr>'}
+    </tr>`).join('')||'<tr><td colspan="10">Aucun résultat pour ces critères. Les sites inconnus restent consultables.</td></tr>'}
     </tbody></table></div>
+    ${visible.length&&run.state!=='running'&&batch?.state!=='running'?`<button type="button" data-discovery-action="enrich-batch">Enrichir les prospects sélectionnés (${run.batchLimit} max.)</button>`:''}
     ${visible.some(row=>row.decision==='approved')?'<button class="primary">Importer les entreprises approuvées sélectionnées</button>':''}</form>
   </section>`;
 }
@@ -131,7 +167,7 @@ function prospectDiscoveryWorkspace(){
   const criteria=discoveryRun?.criteria||{},detail=discoveryRun?.results.find(row=>row.id===discoveryDetail);
   return `<div class="discovery-workspace">
     <section class="panel"><h2>Nouvelle recherche</h2><p>Annuaire des Entreprises · objectif initial de 10 candidats · validation manuelle avant import.</p>
-    <form id="discovery-search">${discoveryFilters(criteria)}<button class="primary" ${discoveryRun?.state==='running'?'disabled':''}>Rechercher des entreprises</button></form></section>
+    <form id="discovery-search">${discoveryFilters(criteria)}${discoveryMeta.webSearch?'<label><input name="autoEnrich" type="checkbox"> Enrichir automatiquement les premiers résultats</label>':''}<button class="primary" ${discoveryRun?.state==='running'?'disabled':''}>Rechercher des entreprises</button></form></section>
     ${discoveryRun?discoveryResults(discoveryRun):''}
     ${detail?discoveryCandidate(detail):''}
     <section class="panel"><h2>Historique</h2><p>Résultats temporaires conservés 30 jours.</p>
@@ -155,19 +191,19 @@ async function importDiscovery(ids){
 }
 document.addEventListener('submit',event=>{
   const form=event.target;
-  if(view!=='discovery'||!form.matches('#discovery-search,#discovery-import,[data-discovery-verify],[data-discovery-signal]'))return;
+  if(view!=='discovery'||!form.matches('#discovery-search,#discovery-import,[data-discovery-verify],[data-discovery-signal],[data-discovery-assisted]'))return;
   event.preventDefault();
   const fields=new FormData(form);
   discoveryWork(event.submitter,async()=>{
     if(form.id==='discovery-search'){
       const selection=Object.fromEntries(['sectors','sizes','digital','priorities'].map(key=>[key,fields.getAll(key)]));
-      const started=await api(discoveryBase+'/runs',{...selection,location:fields.get('location'),area:fields.get('area'),query:fields.get('query'),limit:Number(fields.get('limit'))});
+      const started=await api(discoveryBase+'/runs',{...selection,location:fields.get('location'),area:fields.get('area'),query:fields.get('query'),limit:Number(fields.get('limit')),autoEnrich:fields.has('autoEnrich')});
       discoveryDetail='';discoveryShowAll=false;await loadDiscoveryRun(started.id);
     }else if(form.id==='discovery-import'){
       await importDiscovery(fields.getAll('ids'));
     }else{
-      const id=form.dataset.discoveryVerify||form.dataset.discoverySignal;
-      await api(discoveryBase+'/candidates/'+id+(form.dataset.discoveryVerify?'/verify':'/signal'),Object.fromEntries(fields));
+      const id=form.dataset.discoveryVerify||form.dataset.discoverySignal||form.dataset.discoveryAssisted;
+      await api(discoveryBase+'/candidates/'+id+(form.dataset.discoveryVerify?'/verify':form.dataset.discoveryAssisted?'/assisted':'/signal'),Object.fromEntries(fields));
       await loadDiscoveryRun(discoveryRun.id,{history:true});
     }
   });
@@ -186,7 +222,16 @@ document.addEventListener('click',event=>{
       discoveryDetail='';discoveryShowAll=false;await loadDiscoveryRun(run);return;
     }
     if(action==='import'){await importDiscovery([candidate]);return;}
-    if(action==='cancel')await api(discoveryBase+'/runs/'+discoveryRun.id+'/cancel',{});
+    if(action.startsWith('enrich-')){
+      const path=discoveryBase+'/runs/'+discoveryRun.id+'/enrich';
+      if(action==='enrich-cancel')await api(path+'/cancel',{});
+      else if(action==='enrich-resume')await api(path,{resume:true});
+      else{
+        const ids=action==='enrich-one'?[candidate]:new FormData(document.querySelector('#discovery-import')).getAll('enrich');
+        if(!ids.length)throw Error('Sélectionnez au moins un prospect à enrichir.');
+        await api(path,{ids});
+      }
+    }else if(action==='cancel')await api(discoveryBase+'/runs/'+discoveryRun.id+'/cancel',{});
     else if(action==='unidentified')await api(discoveryBase+'/candidates/'+candidate+'/verify',{url:''});
     else if(action==='audit'){notice('Audit en cours…');await api(discoveryBase+'/candidates/'+candidate+'/audit',{});notice('Audit enregistré.');}
     else await api(discoveryBase+'/candidates/'+candidate+'/decision',{decision:action,reviewed:action==='approved'});
