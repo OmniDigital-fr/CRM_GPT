@@ -10,6 +10,15 @@ export function initOutreach(db){
  db.exec(`CREATE TABLE IF NOT EXISTS outreach_sequences(id TEXT PRIMARY KEY,prospect_id TEXT NOT NULL,state TEXT NOT NULL,created TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS prospect_replies(id TEXT PRIMARY KEY,prospect_id TEXT NOT NULL,body TEXT NOT NULL,scenario TEXT NOT NULL,created TEXT NOT NULL);`);
 }
+export function deleteProspectData(db,id){
+ db.prepare('DELETE FROM contact_history WHERE prospect_id=?').run(id);
+ db.prepare('DELETE FROM outreach_sequences WHERE prospect_id=?').run(id);
+ db.prepare('DELETE FROM prospect_replies WHERE prospect_id=?').run(id);
+ db.prepare('DELETE FROM events WHERE message_id IN (SELECT id FROM messages WHERE prospect_id=?)').run(id);
+ db.prepare('DELETE FROM messages WHERE prospect_id=?').run(id);
+ db.prepare('DELETE FROM site_audits WHERE prospect_id=?').run(id);
+ db.prepare('DELETE FROM prospects WHERE id=?').run(id);
+}
 export function stopOutreach(db,prospectId,reason='Réponse reçue'){
  db.prepare("UPDATE outreach_sequences SET state='En pause' WHERE prospect_id=? AND state='Active'").run(prospectId);
  db.prepare("UPDATE messages SET status='Annulé',approved_at='' WHERE prospect_id=? AND status IN ('Brouillon','Approuvé')").run(prospectId);

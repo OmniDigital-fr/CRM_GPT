@@ -6,7 +6,7 @@ import {initDigitalAudit,DigitalAuditService,mountDigitalAudit} from './audit-en
 import {initCommercial,mountCommercial,CommercialError} from './commercial.js';
 import {initEntities,mountEntities,EntityError,restrictedIdentity} from './entities.js';
 import {MailService,readMailConfig,initMail} from './mail-service.js';
-import {initOutreach,createSequence,registerReply,messageAction,stopOutreach} from './outreach.js';
+import {initOutreach,createSequence,registerReply,messageAction,stopOutreach,deleteProspectData} from './outreach.js';
 import {CONTACT_STATUSES,POLICY_FIELDS,PolicyError,initPolicy,checkPolicyValues,isOpposed,suppressed,suppress,history,assertDraftAllowed,reconsent} from './contact-policy.js';
 import {auditWebsite,AuditError,inspectWebsite} from './site-audit.js';
 import express from 'express';
@@ -320,13 +320,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
         if (req.body?.confirm!==id) throw new InputError('Confirmation de suppression requise.');
         if(db.prepare("SELECT 1 FROM messages WHERE prospect_id=? AND status='Envoi en cours'").get(id))throw new InputError('Un envoi est en cours. Attendez sa fin avant de supprimer le contact.',409);
         if(isOpposed(p))suppress(db,p);
-        db.prepare('DELETE FROM contact_history WHERE prospect_id=?').run(id);
-        db.prepare('DELETE FROM outreach_sequences WHERE prospect_id=?').run(id);
-        db.prepare('DELETE FROM prospect_replies WHERE prospect_id=?').run(id);
-        db.prepare('DELETE FROM events WHERE message_id IN (SELECT id FROM messages WHERE prospect_id=?)').run(id);
-        db.prepare('DELETE FROM messages WHERE prospect_id=?').run(id);
-        db.prepare('DELETE FROM site_audits WHERE prospect_id=?').run(id);
-        db.prepare('DELETE FROM prospects WHERE id=?').run(id);
+        deleteProspectData(db,id);
       } else throw new InputError('Action inconnue.',404);
     });
     res.json({ok:true});
