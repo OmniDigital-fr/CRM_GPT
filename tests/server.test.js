@@ -485,3 +485,41 @@ test('PDF outreach uses fresh CRM audit, sequences are drafts and approval remai
  }
  assert.equal((await f.request('/api/messages/'+messages[0].id+'/record-sent',{confirm:messages[0].id})).status,400);
 });
+
+test('structured import reads a real PDF with labels above values and a bare website',async t=>{
+ const f=await fixture(t);
+ const {default:PDFDocument}=await import('pdfkit');
+ const document=new PDFDocument(),chunks=[];
+ document.on('data',chunk=>chunks.push(chunk));
+ const finished=once(document,'end');
+ document.text('Dénomination sociale\nAtelier Exemple\nSite internet :\nwww.example.com\nAdresse e-mail\ncontact@example.com\nTéléphone professionnel\n0102030405');
+ document.end();
+ await finished;
+ const response=await fetch(f.base+'/api/pdf-contacts/preview',{method:'POST',headers:{'Content-Type':'application/pdf'},body:Buffer.concat(chunks)});
+ const preview=await response.json();
+ assert.equal(response.status,200,JSON.stringify(preview));
+ const fields=Object.fromEntries(preview.changes.map(field=>[field.key,field.value]));
+ assert.deepEqual(fields,{name:'Atelier Exemple',website:'https://www.example.com',email:'contact@example.com',phone:'0102030405'});
+ const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.token,choices:{}});
+ assert.equal(saved.status,200);
+ assert.ok(saved.data.contact_id);
+});
+
+test('Omni Digital prospect report imports the identity table and ignores the audit and outreach sections',async t=>{
+ const f=await fixture(t,{parsePdf:async()=>[
+  'Prospect 1 — Agence Exemple','Identité et coordonnées','SIREN / SIRET  732829320 / 73282932000074',
+  'Adresse  10 rue Exemple, 78000 Versailles','Secteur / NAF  Immobilier','Dirigeant  Camille Test — Gérante',
+  'Site  https://example.com','Téléphone  01 23 45 67 89','Email  non trouvé',
+  'Audit du site (lecture publique)','Téléphone  INFORMATION À IGNORER','Premier contact (email)','Email  faux@example.com'
+ ].join('\n')});
+ const preview=await previewPdf(f);
+ assert.equal(preview.status,200,JSON.stringify(preview.data));
+ const fields=Object.fromEntries(preview.data.changes.map(field=>[field.key,field.value]));
+ assert.deepEqual(fields,{name:'Agence Exemple',siren:'732829320',siret:'73282932000074',address:'10 rue Exemple',
+  postal_code:'78000',city:'Versailles',industry:'Immobilier',display_name:'Camille Test',job_title:'Gérante',
+  website:'https://example.com',phone:'01 23 45 67 89'});
+ const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.data.token,choices:{}});
+ assert.equal(saved.status,200,JSON.stringify(saved.data));
+ const contact=(await f.request('/api/contacts/'+saved.data.contact_id)).data;
+ assert.equal(contact.email,'');
+});

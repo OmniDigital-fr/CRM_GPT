@@ -45,17 +45,7 @@ document.addEventListener('click',async e=>{const b=e.target.closest('button');i
  if(b.dataset.entityEdit)await entityEdit(b.dataset.entityEdit,b.dataset.key);
  if(b.dataset.entityOpen)await entityOpen(b.dataset.entityOpen,b.dataset.key,b.dataset.entityOpen==='contacts'&&entityDialog.contains(b)&&entityDialog.dataset.entityKind==='companies');
  if(b.dataset.entityDelete){
-  if(!window.confirm(`Supprimer définitivement « ${b.dataset.contactName} », ses messages et son historique de contact ? L’entreprise, ses audits, ses opportunités et ses tâches seront conservés.`))return;
-  b.disabled=true;
-  const key=b.dataset.entityDelete;
-  const result=await api(`/api/contacts/${key}/delete`,{confirm:key});
-  entityDialog.close();
-  await refresh();
-  if(b.hasAttribute('data-return-company')){
-   await entityOpen('companies',result.company_id);
-   entityDialog.querySelector('[data-entity-tab="1"]')?.click();
-  }
-  notice('Contact supprimé.');
+  requestDeleteContact(b.dataset.entityDelete,b.dataset.contactName,b.hasAttribute('data-return-company'));
  }
  if(b.hasAttribute('data-entity-tab')){entityDialog.querySelectorAll('[role=tabpanel]').forEach((p,i)=>p.hidden=i!==Number(b.dataset.entityTab));entityDialog.querySelectorAll('[role=tab]').forEach(p=>p.setAttribute('aria-selected',p===b?'true':'false'))}
  if(b.dataset.entityAudit){b.disabled=true;await api(`/api/companies/${b.dataset.entityAudit}/audit`,{});await refresh();await entityOpen('companies',b.dataset.entityAudit);notice('Audit enregistré et conservé dans l’historique.')}
