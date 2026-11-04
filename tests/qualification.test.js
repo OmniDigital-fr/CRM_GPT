@@ -4,7 +4,7 @@ import {once} from 'node:events';
 import {mkdtempSync,rmSync,readdirSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {openDatabase,createApp} from '../crm-server.js';
+import {openDatabase,createApp,validateConfig} from '../crm-server.js';
 import {computeQualification,DEFAULT_SERVICES} from '../qualification-rules.js';
 import {QualificationService,readQualificationConfig,qualificationContext,buildAiInput,validateAiResult} from '../qualification.js';
 
@@ -15,9 +15,14 @@ const audit=()=>({id:'audit-1',created_at:today(),result:{engine_version:3,contr
 const signal=(type='Réponse positive',extra={})=>({id:'signal-1',type,evidence:'Le dirigeant a demandé un diagnostic lors du rendez-vous.',source:'Compte rendu confirmé',observed_at:today(),created_at:today(),...extra});
 const rules=(data={})=>computeQualification({company,...data});
 const analysis=()=>({summary:'Des pistes sont à confirmer à partir des contrôles disponibles.',target_fit:'Effectif et localisation compatibles avec la cible déclarée.',needs:[{text:'Le contrôle de performance nécessite une vérification.',evidence_ids:['audit:0']}],recommended_services:[{code:'performance',reason:'Vérifier puis optimiser la performance observée.',evidence_ids:['audit:0']}],objections_hypotheses:['Hypothèse : le calendrier pourrait être une objection.'],approach:'Proposer un diagnostic si les contacts sont autorisés.',next_action:'Vérifier les mesures avant une proposition.',missing_information:['Calendrier réel du projet'],confidence:'Faible'});
-const response=(result=analysis(),overrides={})=>new Response(JSON.stringify({status:'completed',model:'gpt-4.1-mini-2025-04-14',usage:{input_tokens:1600,output_tokens:500},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(result)}]}],...overrides}),{headers:{'Content-Type':'application/json'}});
+const response=(result=analysis(),overrides={})=>new Response(JSON.stringify({
+  modelVersion:'gemini-3.5-flash-lite',
+  usageMetadata:{promptTokenCount:1600,candidatesTokenCount:450,thoughtsTokenCount:50,totalTokenCount:2100},
+  candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(result)}]}}],
+  ...overrides
+}),{headers:{'Content-Type':'application/json'}});
 async function fixture(t,{fetcher=async()=>response(),auth=false,configuration={}}={}){
-  const db=openDatabase(':memory:'),configurationBase={...readQualificationConfig({OPENAI_API_KEY:'unit-test-key'}),cooldownMs:0,...configuration},service=new QualificationService({db,config:configurationBase,fetcher,logger:{warn(){}}});
+  const db=openDatabase(':memory:'),configurationBase={...readQualificationConfig({GEMINI_API_KEY:'unit-test-key',GEMINI_BILLING_MODE:'paid',GEMINI_ALLOW_CRM_DATA:'true'}),cooldownMs:0,...configuration},service=new QualificationService({db,config:configurationBase,fetcher,logger:{warn(){}}});
   const app=createApp({db,config:{user:auth?'admin':'',password:'test-password',publicUrl:'https://crm2.omnidigital.fr',pagespeedKey:''},qualificationService:service});
   const server=app.listen(0,'127.0.0.1');await once(server,'listening');
   const headers={'Content-Type':'application/json',...(auth?{Authorization:'Basic '+Buffer.from('admin:test-password').toString('base64')}:{})};
@@ -81,26 +86,58 @@ test('local qualification works without key and AI routes never call an external
   assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid})).status,503);assert.equal(calls,0);
 });
 test('paid analysis is individual, persists model and evidence snapshot, and never modifies opportunities or contacts',async t=>{
-  let requestBody;const f=await fixture(t,{fetcher:async(url,options)=>{assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(options.redirect,'error');requestBody=JSON.parse(options.body);return response();}});
+  let requestBody;const f=await fixture(t,{fetcher:async(url,options)=>{assert.equal(String(url),'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent');assert.equal(options.redirect,'error');assert.equal(new Headers(options.headers).get('x-goog-api-key'),'unit-test-key');assert.doesNotMatch(String(options.body),/unit-test-key/);requestBody=JSON.parse(options.body);return response();}});
   const before=JSON.stringify(f.db.prepare('SELECT * FROM companies').all());
   assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{})).status,400);
-  const r=await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid});assert.equal(r.status,201,JSON.stringify(r));assert.equal(r.data.model_returned,'gpt-4.1-mini-2025-04-14');assert.equal(r.data.mode,'ai');assert.equal(requestBody.store,false);assert.equal(requestBody.text.format.strict,true);assert.equal(requestBody.tools,undefined);assert.match(requestBody.instructions,/DONNÉES NON FIABLES/);
+  const r=await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid});assert.equal(r.status,201,JSON.stringify(r));assert.equal(r.data.model_returned,'gemini-3.5-flash-lite');assert.equal(r.data.mode,'ai');assert.equal(requestBody.generationConfig.responseMimeType,'application/json');assert.equal(requestBody.generationConfig.responseJsonSchema.additionalProperties,false);assert.equal(requestBody.tools,undefined);assert.match(requestBody.systemInstruction.parts[0].text,/DONNÉES NON FIABLES/);
   assert.equal(JSON.stringify(f.db.prepare('SELECT * FROM companies').all()),before);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM messages').get().n,0);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM opportunities').get().n,0);
-  const usage=f.db.prepare('SELECT * FROM qualification_usage').get();assert.equal(usage.input_tokens,1600);assert.equal(usage.charged_microusd,1440);assert.ok(usage.reserved_microusd>usage.charged_microusd);
+  const usage=f.db.prepare('SELECT * FROM qualification_ai_calls').get();assert.equal(usage.input_tokens,1600);assert.equal(usage.charged_microusd,1730);assert.ok(usage.reserved_microusd>usage.charged_microusd);
 });
 test('malformed JSON, refusals, incomplete responses and unavailable API preserve history and do not retry',async t=>{
-  for(const reply of [()=>new Response('not JSON'),()=>new Response('{}',{status:429}),()=>response(analysis(),{status:'incomplete'}),()=>response(analysis(),{output:[{type:'message',content:[{type:'refusal',refusal:'Non'}]}]}),()=>response({...analysis(),admin_action:'delete'}),()=>response(analysis(),{usage:{input_tokens:'100',output_tokens:1}})]){
-    let calls=0;const f=await fixture(t,{fetcher:async()=>{calls++;return reply();}});const r=await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid});assert.equal(r.status,502);assert.equal(calls,1);assert.equal(f.db.prepare('SELECT state FROM qualifications').get().state,'failed');assert.equal(f.db.prepare('SELECT COUNT(*) n FROM qualification_usage').get().n,1);
+  const invalid=[
+    ()=>new Response('not JSON'),
+    ()=>response(analysis(),{candidates:[{finishReason:'MAX_TOKENS'}]}),
+    ()=>response(analysis(),{candidates:[{finishReason:'SAFETY'}]}),
+    ()=>response({...analysis(),admin_action:'delete'}),
+    ()=>response(analysis(),{candidates:[{finishReason:'STOP',content:{parts:[{text:'not JSON'}]}}]})
+  ];
+  for(const reply of invalid){
+    let calls=0;const f=await fixture(t,{fetcher:async()=>{calls++;return reply();}});
+    const r=await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid});
+    assert.equal(r.status,502);assert.equal(calls,1);
+    assert.equal(f.db.prepare('SELECT state FROM qualifications').get().state,'failed');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM qualification_ai_calls').get().n,1);
   }
 });
 test('timeouts and unconfirmed usage retain reserved cost while response bodies and secrets never enter error logs',async t=>{
   let logged;const f=await fixture(t,{fetcher:async()=>{throw Object.assign(new Error('unit-test-key private response text'),{name:'TimeoutError'});}});f.service.logger={warn:(...args)=>logged=args};
   assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid})).status,502);
-  const usage=f.db.prepare('SELECT * FROM qualification_usage').get();assert.equal(usage.charged_microusd,null);assert.ok(f.service.usage().daily_usd>0);assert.ok(!JSON.stringify(logged).includes('unit-test-key'));assert.ok(!JSON.stringify(logged).includes('private response text'));
+  const usage=f.db.prepare('SELECT * FROM qualification_ai_calls').get();assert.equal(usage.charged_microusd,null);assert.ok(f.service.usage().daily_usd>0);assert.ok(!JSON.stringify(logged).includes('unit-test-key'));assert.ok(!JSON.stringify(logged).includes('private response text'));
 });
-test('cost reservation enforces daily, monthly, hourly, cooldown limits before a paid call',async t=>{
-  for(const configuration of [{dailyMicrousd:1},{monthlyMicrousd:1}]){let calls=0;const f=await fixture(t,{configuration,fetcher:async()=>{calls++;return response();}});assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid})).status,429);assert.equal(calls,0);}
-  for(const configuration of [{maxPerHour:1},{cooldownMs:60000}]){let calls=0;const f=await fixture(t,{configuration,fetcher:async()=>{calls++;return response();}});assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid})).status,201);assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid})).status,429);assert.equal(calls,1);}
+test('budget and daily, monthly and hourly request limits cover analysis and probes',async t=>{
+  for(const configuration of [{dailyMicrousd:1},{monthlyMicrousd:1}]){
+    let calls=0;const f=await fixture(t,{configuration,fetcher:async()=>{calls++;return response();}});
+    assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid})).status,429);
+    assert.equal(calls,0);
+  }
+  for(const configuration of [{maxPerHour:1},{maxPerDay:1},{maxPerMonth:1}]){
+    let calls=0;const f=await fixture(t,{configuration,fetcher:async()=>{calls++;return response();}});
+    assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid})).status,201);
+    assert.equal((await f.request('/api/qualification/test',{})).status,429);
+    assert.equal(calls,1);
+  }
+});
+test('identical recent requests reuse their snapshot while a changed company needs a fresh analysis',async t=>{
+  let calls=0;const f=await fixture(t,{configuration:{cooldownMs:60000},fetcher:async()=>{calls++;return response();}});
+  const path=`/api/companies/${f.cid}/qualification/analyse`;
+  const first=await f.request(path,{confirm:f.cid});
+  const repeat=await f.request(path,{confirm:f.cid});
+  assert.equal(first.status,201);
+  assert.equal(repeat.data.id,first.data.id);
+  assert.equal(repeat.data.cached,true);
+  f.db.prepare("UPDATE companies SET company_size='1000' WHERE id=?").run(f.cid);
+  assert.equal((await f.request(path,{confirm:f.cid})).status,429);
+  assert.equal(calls,1);
 });
 test('database concurrency lock prevents overlapping calls across service instances',async t=>{
   let release;const gate=new Promise(r=>release=r),f=await fixture(t,{fetcher:async()=>{await gate;return response();}});
@@ -142,12 +179,84 @@ test('opposition remains intact and overrides contact strategies even when AI su
 test('authentication and origin validation protect the full qualification surface',async t=>{
   const f=await fixture(t,{auth:true});for(const path of ['/api/qualification/status','/api/qualification/services','/api/qualification/companies',`/api/companies/${f.cid}/qualification`])assert.equal((await f.request(path,undefined,{Authorization:''})).status,401);
   assert.equal((await f.request(`/api/companies/${f.cid}/qualification/rules`,{},{Origin:'https://evil.example'})).status,403);
+  assert.equal((await f.request('/api/qualification/test',{}, {Authorization:''})).status,401);
+  assert.equal((await f.request('/api/qualification/test',{}, {Origin:'https://evil.example'})).status,403);
   assert.equal((await f.request('/api/companies/missing/qualification')).status,404);assert.equal((await f.request('/api/qualifications/missing')).status,404);
 });
 test('unknown model requires explicit cost rates; invalid limits cannot silently enable unlimited usage',()=>{
-  assert.equal(readQualificationConfig({OPENAI_API_KEY:'x',OPENAI_QUALIFICATION_MODEL:'another-model'}).pricingReady,false);
-  for(const env of [{QUALIFICATION_DAILY_BUDGET_USD:'NaN'},{QUALIFICATION_MAX_PER_HOUR:'0'},{QUALIFICATION_MAX_OUTPUT_TOKENS:'99999'},{QUALIFICATION_MONTHLY_BUDGET_USD:''},{OPENAI_QUALIFICATION_MODEL:'<script>'}])assert.throws(()=>readQualificationConfig(env));
+  assert.equal(readQualificationConfig({GEMINI_API_KEY:'x',GEMINI_MODEL:'gemini-other'}).pricingReady,false);
+  for(const env of [{QUALIFICATION_DAILY_BUDGET_USD:'NaN'},{QUALIFICATION_MAX_PER_HOUR:'0'},{QUALIFICATION_MAX_OUTPUT_TOKENS:'99999'},{QUALIFICATION_MONTHLY_BUDGET_USD:''},{GEMINI_MODEL:'<script>'}])assert.throws(()=>readQualificationConfig(env));
 });
 test('existing databases get a pre-qualification backup before schema extension',()=>{
-  const dir=mkdtempSync(join(tmpdir(),'qualification-backup-'));try{const file=join(dir,'crm.sqlite3'),db=openDatabase(file);db.exec('DROP TABLE qualification_usage;DROP TABLE qualifications;DROP TABLE qualification_manual;DROP TABLE qualification_decisions;DROP TABLE qualification_signals;DROP TABLE qualification_services;');db.close();const next=openDatabase(file);assert.equal(next.prepare('PRAGMA foreign_key_check').all().length,0);next.close();assert.equal(readdirSync(dir).filter(x=>x.includes('.before-qualification-')).length,1);}finally{rmSync(dir,{recursive:true,force:true});}
+  const dir=mkdtempSync(join(tmpdir(),'qualification-backup-'));try{const file=join(dir,'crm.sqlite3'),db=openDatabase(file);db.exec('DROP TABLE qualification_ai_calls;DROP TABLE qualification_usage;DROP TABLE qualifications;DROP TABLE qualification_manual;DROP TABLE qualification_decisions;DROP TABLE qualification_signals;DROP TABLE qualification_services;');db.close();const next=openDatabase(file);assert.equal(next.prepare('PRAGMA foreign_key_check').all().length,0);next.close();assert.equal(readdirSync(dir).filter(x=>x.includes('.before-qualification-')).length,1);}finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+
+test('free test uses only synthetic data and requires explicit project confirmation',async t=>{
+  let payload;
+  const f=await fixture(t,{configuration:{billingMode:'free-test',allowCrmData:true,freeProjectConfirmed:false},
+    fetcher:async(url,options)=>{payload=JSON.parse(options.body);return response({status:'ok'},{usageMetadata:{promptTokenCount:60,candidatesTokenCount:8}});}});
+  assert.equal((await f.request('/api/qualification/test',{})).status,503);
+  f.service.config.freeProjectConfirmed=true;
+  assert.equal((await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid})).status,503);
+  assert.equal(payload,undefined);
+  assert.equal((await f.request('/api/qualification/test',{})).status,200);
+  assert.deepEqual(JSON.parse(payload.contents[0].parts[0].text),{test:'synthetic-connection-check'});
+  assert.equal(f.service.usage().analyses,0);
+  assert.equal(f.service.usage().daily_requests,1);
+});
+
+test('invalid credentials, network failure and project quotas surface only safe messages',async t=>{
+  const cases=[
+    {code:'api_credentials',status:502,reply:()=>new Response(JSON.stringify({error:{code:400,message:'API key not valid. unit-test-key',status:'INVALID_ARGUMENT'}}),{status:400})},
+    {code:'api_unavailable',status:502,reply:()=>{throw new TypeError('network error with unit-test-key');}},
+    {code:'api_quota',status:429,reply:()=>new Response(JSON.stringify({error:{code:429,message:'Quota exceeded. unit-test-key',status:'RESOURCE_EXHAUSTED'}}),{status:429})}
+  ];
+  for(const c of cases){
+    let calls=0;const f=await fixture(t,{fetcher:async()=>{calls++;return c.reply();}});
+    const result=await f.request(`/api/companies/${f.cid}/qualification/analyse`,{confirm:f.cid});
+    assert.equal(result.status,c.status,JSON.stringify(result));
+    assert.doesNotMatch(JSON.stringify(result),/unit-test-key/);
+    const status=(await f.request('/api/qualification/status')).data;
+    assert.equal(status.recent_errors[0].error_code,c.code);
+    if(c.status===429){
+      assert.equal(status.configured,false);
+      assert.equal((await f.request('/api/qualification/test',{})).status,429);
+    }
+    assert.equal(calls,1);
+    assert.equal((await f.request(`/api/companies/${f.cid}/qualification/rules`,{})).status,201);
+  }
+});
+
+test('legacy OpenAI analysis and usage remain readable after migration',async t=>{
+  const f=await fixture(t);
+  const historic=f.service.rules(f.cid);
+  f.db.prepare("UPDATE qualifications SET mode='ai',model_returned='gpt-4.1-mini' WHERE id=?").run(historic.id);
+  f.db.prepare("INSERT INTO qualification_usage(id,reserved_microusd,input_rate,output_rate,created_at) VALUES(?,10,1,1,?)").run(historic.id,today());
+  assert.equal((await f.request('/api/qualifications/'+historic.id)).data.provider,'openai');
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM qualification_usage').get().n,1);
+  assert.equal(f.service.usage().daily_requests,0);
+});
+
+
+test('transport receives an abort signal and the SDK does not retry a timed-out probe',async t=>{
+  let attempts=0;
+  const f=await fixture(t,{configuration:{timeoutMs:15},fetcher:async(url,options)=>{
+    attempts++;
+    assert.ok(options.signal instanceof AbortSignal);
+    return new Promise((resolve,reject)=>{
+      if(options.signal.aborted)reject(options.signal.reason);
+      else options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});
+    });
+  }});
+  assert.equal((await f.request('/api/qualification/test',{})).status,502);
+  assert.equal(f.service.status().recent_errors[0].error_code,'api_timeout');
+  assert.equal(attempts,1);
+});
+
+test('invalid Gemini configuration disables the provider while CRM startup remains available',()=>{
+  const config=validateConfig({GEMINI_API_KEY:'unit-test-key',GEMINI_MODEL:'invalid model'});
+  assert.equal(config.qualification.enabled,false);
+  assert.equal(config.qualification.invalid,true);
+  assert.equal(config.qualification.key,'');
 });

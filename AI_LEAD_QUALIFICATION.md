@@ -2,13 +2,12 @@
 
 ## État et périmètre
 
-Branche : `feature/ai-lead-qualification`, créée sur le `main` distant
-`dd6c5a70404274b10e7b028bdc25cdb945753355` (dashboard réorganisé après phase 3).
-Travail destiné exclusivement à CRM2. Aucun accès ni changement au CRM historique.
-Le merge et le déploiement ne font pas partie de cette livraison.
+La qualification commerciale est intégrée à CRM2. La branche
+`feature/gemini-ai-integration` remplace le fournisseur génératif à partir de
+la phase 4 déjà intégrée dans `main` (`450cbea`).
 
 L’interface est en français de France. La qualification est intégrée dans la
-fiche Entreprise, onglet **Qualification IA**. Sans clé OpenAI, le CRM, les règles,
+fiche Entreprise, onglet **Qualification IA**. Sans clé Gemini, le CRM, les règles,
 les preuves, le catalogue, les signaux, les décisions et les historiques restent
 opérationnels ; seul le bouton de synthèse IA est désactivé.
 
@@ -23,7 +22,7 @@ Les données existantes réutilisées sont :
 | Source | Utilisation | Limite de fiabilité |
 | --- | --- | --- |
 | `companies` | Effectif, secteur, pays, présence d’un site, état commercial | Champs déclaratifs ; un champ vide ne prouve pas une absence |
-| `contacts` / `prospects` | Restrictions et scénarios de réponses structurés | Aucune identité ni coordonnée envoyée à OpenAI |
+| `contacts` / `prospects` | Restrictions et scénarios de réponses structurés | Aucune identité ni coordonnée envoyée à Gemini |
 | `audits` | Dernier résultat du moteur digital v3 | Contrôles indicatifs, périmètre limité, audit de moins de 90 jours pour Need |
 | `opportunities` | Montants récurrents saisis et contrats signés | Un état du pipeline ne constitue pas une preuve d’intention |
 | Réponses structurées `prospects` | Scénario positif, demande d’informations/devis ou refus avec détail et date | Le contenu du message n’est pas envoyé ; le scénario demeure une déclaration humaine |
@@ -33,20 +32,9 @@ pas dupliqués dans une nouvelle fiche. Un instantané de preuves est toutefois
 conservé avec chaque qualification pour qu’une analyse antérieure reste lisible
 après modification de la fiche ou réalisation d’un nouvel audit.
 
-Il n’existait aucune intégration IA dans `main`. L’intégration ajoutée utilise
-l’API officielle OpenAI Responses avec `fetch` natif. Aucune nouvelle dépendance.
-Les vérifications de site restent assurées par le moteur v3 ; la qualification ne
-visite aucun site et n’exécute aucun JavaScript externe.
-
-Modules :
-
-- `qualification-rules.js` : méthode versionnée, scores, preuves et services admissibles.
-- `qualification.js` : schéma SQLite, contexte, intégration OpenAI, validation,
-  budgets, historique et routes authentifiées.
-- `static/qualification-ui.js` : onglet Entreprise, décisions, signaux, synthèse,
-  historique et édition du catalogue.
-- La liste Entreprises reçoit une projection de qualification distincte des
-  anciens champs manuels `priority` et `opportunity_score`.
+L’adaptateur Gemini remplace la précédente intégration OpenAI. Les vérifications
+de sites restent assurées par le moteur v3. Les modules de qualification,
+les scores, les preuves et les décisions commerciales restent locaux.
 
 ## Méthodologie version `omni-qualification-1.0`
 
@@ -169,7 +157,8 @@ avec référence et date de signature. Aucun prix ni montant n’est inventé pa
 | `qualification_manual` | Décision de priorité active, justification et version |
 | `qualification_decisions` | Historique append-only des décisions et retours au calcul |
 | `qualifications` | Instantanés scores/preuves, résultat IA, mode, état, modèle demandé/retourné, version et dates |
-| `qualification_usage` | Réservation budgétaire, coût calculé, tokens et tarifs appliqués |
+| `qualification_usage` | Réservations et consommation historiques OpenAI |
+| `qualification_ai_calls` | Tests et analyses Gemini, quotas, cache, tokens et erreurs filtrées |
 
 Toutes les associations utilisent des clés étrangères avec suppression restreinte.
 La migration et l’initialisation du catalogue sont transactionnelles et
@@ -187,87 +176,101 @@ courants, et l’historique présente les instantanés datés ; les preuves peuv
 évoluer sans réécrire l’analyse ancienne. Les listes d’historique retournent les
 50 entrées les plus récentes, les autres restent conservées dans SQLite.
 
-## OpenAI et maîtrise des coûts
+## Gemini et maîtrise des coûts
 
-API utilisée : `POST https://api.openai.com/v1/responses`, sans outils, sans
-navigation, sans action administrative. `store:false`, JSON Schema strict,
-validation serveur supplémentaire de la forme et des références. Les appels
-sont uniquement individuels, après confirmation dans le formulaire.
+L’adaptateur `ai/providers/gemini.js` utilise `@google/genai` et
+`generateContent` avec JSON Schema. La validation locale contrôle les longueurs,
+les champs, les valeurs et les références de preuve. Le SDK s’exécute côté
+serveur sur Node.js 22.16+. Le contrat du fournisseur normalise le modèle,
+le JSON et les tokens. Les analyses historiques OpenAI gardent leur fournisseur,
+leur modèle et leur consommation. Les nouveaux appels sont enregistrés dans
+`qualification_ai_calls`.
 
-Le serveur impose :
+Le modèle par défaut est `gemini-3.5-flash-lite`. La Google Gemini API le
+documente comme adapté au traitement léger de données et à la traduction, avec
+sorties structurées, niveau gratuit et aucune date d’arrêt annoncée au
+4 novembre 2026. Les quotas dépendent du projet et du modèle. Vérifiez le quota
+effectif dans Google AI Studio. Les limites locales ne sont pas les quotas Google.
 
-- Une analyse IA active à la fois, verrou SQLite partagé entre instances du service.
-- Dix appels par heure et 60 secondes entre deux demandes pour la même entreprise.
-- Budgets locaux de 1 USD/jour et 5 USD/mois, périodes calendaires UTC.
-- 1 800 tokens de sortie maximum et délai de 45 secondes, configurables.
-- Corps de requête maximal de 60 000 octets et réponse limitée à 256 000 octets.
-- Réservation avant appel : borne prudente de tokens d’entrée
-  `2 × octets UTF-8 du corps complet + 2048`, plus le maximum de sortie.
-- Après réception d’un usage valide, coût calculé sur les tokens effectifs.
-  Le prix des tokens d’entrée reste volontairement non remisé, même en cache.
-- Aucun nouvel essai automatique. En cas d’échec ou de délai expiré sans usage
-  confirmé, la réservation reste consommée par prudence : le fournisseur a pu
-  exécuter le traitement. Le compteur local n’est pas une facture.
-- Un appel abandonné conserve sa réservation. Un verrou de processus interrompu
-  est marqué `interrupted` après cinq minutes au prochain lancement manuel.
+- Par défaut, 5 demandes par heure et par compte CRM, 15 par jour et 150 par mois.
+  Les journées et mois locaux suivent UTC. Le CRM utilise son authentification
+  Basic existante et possède actuellement un seul compte configuré.
+- Les tests, les appels échoués et les délais dépassés comptent dans ces limites.
+  Un appel à la fois est autorisé via SQLite. Un appel bloqué est marqué interrompu
+  au prochain lancement après cinq minutes.
+- Une analyse identique terminée dans les 15 dernières minutes est réutilisée,
+  avec la même fiche, le même contexte, le même instantané et le même modèle.
+  Un contexte modifié déclenche une nouvelle analyse après le délai de 60 secondes.
+- Le délai réseau est de 45 secondes par défaut. Le SDK effectue une seule
+  tentative. Un 429 suspend les appels Gemini pendant 15 minutes. Vérifiez les
+  limites du projet avant de relancer, notamment si son quota journalier est épuisé.
+- Les réponses sont limitées à 256 000 octets et les données à 60 000 octets.
+  La limite par défaut de 1 800 tokens de génération est configurable. Le modèle
+  utilise un niveau de raisonnement minimal et aucune recherche ou autre outil.
+- En mode payant, le CRM réserve une estimation prudente avant l’appel. En cas
+  d’usage inconnu, la réservation reste comptabilisée. Les tokens de raisonnement
+  déclarés sont inclus dans le coût de sortie. Les plafonds locaux sont des
+  estimations et la facturation Google fait foi.
 
-Les tarifs par défaut ne sont disponibles que pour `gpt-4.1-mini` et sa version
-`gpt-4.1-mini-2025-04-14`. Pour un autre modèle, les deux tarifs doivent être
-explicitement configurés et supérieurs à zéro ; sinon l’IA reste indisponible.
-Le modèle doit supporter Responses et Structured Outputs. Une réponse refusée,
-incomplète ou invalide n’est pas présentée comme une synthèse réussie.
-
-Tarifs officiels consultés le 4 novembre 2026 pour GPT-4.1 Mini :
-0,40 USD/million de tokens d’entrée et 1,60 USD/million de sortie.
-Exemple indicatif : 5 000 tokens d’entrée + 1 500 de sortie = **0,0044 USD** par
-analyse, soit **0,44 USD** pour 100 analyses de ce volume. Le volume réel dépend
-des preuves et de la réponse. Conversion EUR, taxes et éventuels changements de
-tarifs non inclus. Aucun appel payant réel n’a été exécuté pendant cette livraison.
-
-Ces budgets contrôlent uniquement ce module et dépendent de tarifs correctement
-configurés. Ils ne limitent pas d’autres applications utilisant la même clé.
-Vérifier également l’usage et les alertes du projet OpenAI. Les plafonds ne sont
-pas modifiables par le modèle ou par un simple champ de la fiche entreprise.
+Tarifs standard vérifiés pour ce modèle. L’entrée texte coûte 0,30 USD par
+million de tokens, la sortie 2,50 USD par million, raisonnement compris.
+Par exemple, 5 000 tokens en entrée et 1 500 en sortie représentent environ
+0,00525 USD par analyse, hors taxes et conversion. Pour changer de modèle en mode
+payant, mettez aussi les deux tarifs à jour. Le mode de test gratuit est réservé
+au modèle vérifié par défaut. Le CRM ne sélectionne aucun modèle de secours.
 
 Sources officielles :
 
-- [Modèle, prix, endpoint et capacités GPT-4.1 Mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini)
-- [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
-- [Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- [Modèle et capacités](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)
+- [Tarifs Gemini](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite)
+- [Limites](https://ai.google.dev/gemini-api/docs/rate-limits)
+- [Dates d’arrêt](https://ai.google.dev/gemini-api/docs/deprecations)
+- [Sorties structurées](https://ai.google.dev/gemini-api/docs/structured-output)
 
-## Configuration Hostinger — après revue et autorisation de déploiement
+## Configuration Hostinger — CRM2
 
-Conserver Node.js 22.16+ et le répertoire persistant déjà configuré. Exécuter
-`npm ci`, `npm run build`, puis démarrer avec `npm start`, comme auparavant.
-La seule nouvelle dépendance externe à l’exécution est l’API OpenAI en HTTPS
-sortant, si la fonction est activée. Aucun worker, navigateur, Docker ou nouveau
-service système n’est nécessaire.
+1. Créez une clé dans [Google AI Studio](https://aistudio.google.com/api-keys).
+   Utilisez un projet dédié et vérifiez son niveau d’usage et sa facturation.
+2. Dans hPanel, ouvrez les variables d’environnement serveur de l’application
+   **CRM2**. Définissez `GEMINI_API_KEY` sur la clé du projet. La clé reste dans
+   hPanel, en dehors du dépôt et de l’interface du CRM.
+3. Définissez `GEMINI_MODEL=gemini-3.5-flash-lite`. Consultez `.env.example`
+   pour les limites `QUALIFICATION_MAX_PER_HOUR`, `QUALIFICATION_MAX_PER_DAY`,
+   `QUALIFICATION_MAX_PER_MONTH`, le délai et les budgets.
+4. Pour un essai technique de développeur sur données fictives, utilisez
+   `GEMINI_BILLING_MODE=free-test`. Après vérification d’un projet sans
+   facturation dans AI Studio, définissez `GEMINI_FREE_PROJECT_CONFIRMED=true`.
+   Le CRM ne peut pas vérifier le niveau de facturation à partir de la clé.
+   La confirmation atteste une vérification humaine et ne change pas le projet.
+5. Enregistrez les variables et redémarrez l’application. Conservez Node.js
+   22.16+, le répertoire SQLite persistant et la procédure `npm ci`,
+   `npm run build`, `npm start`. L’accès HTTPS sortant à
+   `generativelanguage.googleapis.com` doit être possible.
+6. Dans **Paramètres → Intelligence artificielle**, cliquez sur **Tester la
+   connexion Gemini**. Le test envoie un objet fictif et contrôle le retour JSON.
+   Le panneau affiche le modèle, les compteurs, les tokens, la dernière analyse
+   terminée et les dernières erreurs. Consultez AI Studio pour les quotas
+   fournisseur et Cloud Billing pour la facturation éventuelle.
+7. Pour suspendre tous les appels, définissez `GEMINI_ENABLED=false` et
+   redémarrez. Retirer la clé désactive aussi les appels. Les scores locaux
+   continuent de fonctionner.
 
-Variables à définir **dans les variables serveur de l’application CRM2** :
+### Usage avec des données CRM en France
 
-```dotenv
-OPENAI_API_KEY=<clé du projet OpenAI, à saisir uniquement dans le panneau serveur>
-OPENAI_QUALIFICATION_MODEL=gpt-4.1-mini-2025-04-14
-QUALIFICATION_DAILY_BUDGET_USD=1
-QUALIFICATION_MONTHLY_BUDGET_USD=5
-QUALIFICATION_MAX_PER_HOUR=10
-QUALIFICATION_COOLDOWN_SECONDS=60
-QUALIFICATION_MAX_OUTPUT_TOKENS=1800
-QUALIFICATION_TIMEOUT_SECONDS=45
-QUALIFICATION_INPUT_USD_PER_MILLION=0.40
-QUALIFICATION_OUTPUT_USD_PER_MILLION=1.60
-```
+Les [conditions Gemini](https://ai.google.dev/gemini-api/terms) exigent les
+« Paid Services » lorsque des clients de l’API sont mis à disposition
+d’utilisateurs de l’EEE, de Suisse ou du Royaume-Uni. Pour l’API, Google définit
+cet accès par un projet associé à un compte de facturation actif. Les clauses
+régionales sur l’usage des données s’appliquent aussi au quota gratuit, ce qui
+est distinct de la restriction de mise à disposition. Google décrit aussi une
+conservation limitée des requêtes et réponses pour la sécurité, la prévention
+des abus et certaines obligations légales.
 
-Ne jamais ajouter la vraie clé dans le code, GitHub, un fichier public, le
-navigateur ou un message client. Ne pas préfixer ces variables avec un préfixe de
-build frontend. L’API `/api/qualification/status` renvoie uniquement la
-disponibilité, le modèle, les limites et le compteur ; jamais la clé.
-
-Sans clé : démarrer normalement, ouvrir une entreprise, contrôler les scores
-locaux et vérifier que l’indisponibilité IA est claire. Après activation : lancer
-une seule entreprise de test, vérifier la synthèse et l’usage dans le projet
-OpenAI avant une utilisation plus large. Ce test réel reste à réaliser par
-l’exploitant dans son environnement avec sa clé.
+Le mode `free-test` bloque tout envoi de données d’entreprise. Après validation
+des conditions, du traitement des données et des coûts, l’exploitant peut choisir
+explicitement `GEMINI_BILLING_MODE=paid` et `GEMINI_ALLOW_CRM_DATA=true` avec
+un projet approprié. Le bouton d’analyse demande ensuite une confirmation pour
+chaque entreprise. Aucun basculement automatique vers ce mode n’existe.
 
 ## Sécurité, confidentialité et validation humaine
 
@@ -309,6 +312,7 @@ périmètre audité ; une absence détectée ne démontre pas une absence sur to
 | `POST /api/companies/:id/qualification/analyse` | Appel individuel avec `confirm` égal à l’identifiant entreprise |
 | `POST /api/companies/:id/qualification/priority` | Décision justifiée avec `version`, ou retour explicite au calcul |
 | `POST /api/companies/:id/qualification/signals` | Signal réel avec `confirmed:true`, preuve, source et date |
+| `POST /api/qualification/test` | Vérification Gemini avec un message fictif, soumise aux limites locales |
 | `GET /api/qualifications/:id` | Instantané conservé et résultat IA éventuel |
 
 La liste Entreprises propose aussi les seuils Fit/Need et un tri de priorité
@@ -317,21 +321,20 @@ le modèle d’accès demeure celui du CRM existant, avec les mêmes droits d’
 
 ## Tests et limites connues
 
-**Validation finale : `npm run build` réussi et 90 tests Node réussis (66 existants et 24 nouveaux), sans échec.**
+Commandes de validation
+
+- `npm run build`
+- `npm test`
 
 Les tests automatisés utilisent des réponses simulées, sans sites ni appels
-OpenAI réels. Ils couvrent scores, données manquantes, audits partiels/anciens,
+Gemini réels. Ils couvrent scores, données manquantes, audits partiels/anciens,
 signaux, refus, tarifs, budgets, réservation avant appel, concurrence, erreurs,
 historique, décisions, FK, authentification, origine, oppositions, catalogue,
 revenus saisis, minimisation et validation des preuves.
 
-Les tests des renderers exécutent le vrai JavaScript avec des réponses réelles de
-l’API locale et analysent le HTML généré : onglet Entreprise, filtres/tri, mode
-sans clé et échappement des contenus malveillants. Ils ne remplacent pas un
-navigateur complet. **La revue visuelle desktop/mobile et le parcours complet
-dans un navigateur restent à faire** : aucun navigateur de rendu n’était installé
-dans cet environnement. Le CSS prévoit trois cartes sur desktop, une seule
-colonne sous 650 px, contrôles natifs et tableaux défilants.
+Les tests d’interface utilisent l’API locale et analysent le HTML généré.
+Le test réel de connexion nécessite la clé de l’exploitant et un projet Gemini
+configuré conformément au mode choisi.
 
 Limites métier : méthode initiale à calibrer, données déclaratives parfois
 incomplètes, vieillissement des preuves, aucun enrichissement ni recherche

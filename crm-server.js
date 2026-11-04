@@ -38,7 +38,13 @@ export function validateConfig(env = process.env) {
     if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('CRM_PUBLIC_URL doit être une origine HTTPS, sans chemin.');
     if (inside(ROOT,dataDir)) throw new Error('Le dossier de données doit rester hors du répertoire de déploiement pour survivre aux mises à jour.');
   }
-  return { production, user, password, dataDir, publicUrl:env.CRM_PUBLIC_URL || '', pagespeedKey:env.PAGESPEED_API_KEY || '',mail:readMailConfig(env),qualification:readQualificationConfig(env) };
+  let qualification;
+  try {
+    qualification=readQualificationConfig(env);
+  } catch {
+    qualification={...readQualificationConfig({}),enabled:false,invalid:true};
+  }
+  return { production, user, password, dataDir, publicUrl:env.CRM_PUBLIC_URL || '', pagespeedKey:env.PAGESPEED_API_KEY || '',mail:readMailConfig(env),qualification };
 }
 
 export function openDatabase(filename) {
@@ -213,6 +219,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
       if (req.headers.authorization?.startsWith('Basic ')) credentials=Buffer.from(req.headers.authorization.slice(6),'base64').toString('utf8');
       if (!timingSafeEqual(digest(credentials),digest(config.user+':'+config.password))) return res.status(401).set('WWW-Authenticate','Basic realm="OmniDigital CRM", charset="UTF-8"').json({error:'Authentification requise.'});
     }
+    req.crmActor=config.user||'local';
     if (!['GET','HEAD','OPTIONS'].includes(req.method)) {
       if (req.headers.origin && config.publicUrl && req.headers.origin!==new URL(config.publicUrl).origin) return res.status(403).json({error:'Origine de la requête non autorisée.'});
       if (!req.is('application/json') && !req.is('application/pdf')) return res.status(415).json({error:'Utilisez JSON ou PDF.'});
@@ -229,7 +236,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     const prospects=db.prepare('SELECT * FROM prospects ORDER BY created DESC').all();
     const messages=db.prepare('SELECT m.*,p.company FROM messages m JOIN prospects p ON p.id=m.prospect_id ORDER BY m.created DESC').all();
     const counts=Object.fromEntries(db.prepare('SELECT kind,COUNT(DISTINCT message_id) AS n FROM events GROUP BY kind').all().map(x=>[x.kind,x.n]));
-    res.json({prospects,messages,sequences:db.prepare('SELECT * FROM outreach_sequences ORDER BY created DESC').all(),replies:db.prepare('SELECT * FROM prospect_replies ORDER BY created DESC').all(),duplicate_groups:duplicateGroups(prospects),metrics:{sent:messages.filter(m=>m.status==='Envoyé').length,opened:counts.open || 0,clicked:counts.click || 0,replied:counts.reply || 0},integrations:{pagespeed:!!config.pagespeedKey,email:mail.status().configured,mail:mail.status()}});
+    res.json({prospects,messages,sequences:db.prepare('SELECT * FROM outreach_sequences ORDER BY created DESC').all(),replies:db.prepare('SELECT * FROM prospect_replies ORDER BY created DESC').all(),duplicate_groups:duplicateGroups(prospects),metrics:{sent:messages.filter(m=>m.status==='Envoyé').length,opened:counts.open || 0,clicked:counts.click || 0,replied:counts.reply || 0},integrations:{qualification:qualification.status(),pagespeed:!!config.pagespeedKey,email:mail.status().configured,mail:mail.status()}});
   });
   app.post('/api/mail/verify',async(req,res)=>res.json(await mail.verify()));
   app.post('/api/mail/sync',async(req,res)=>res.json(await mail.sync()));

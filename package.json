@@ -2,7 +2,7 @@
   "name": "omnidigital-crm",
   "version": "1.0.0",
   "private": true,
-  "description": "OmniDigital CRM \u2014 contacts, prospection et dashboard",
+  "description": "OmniDigital CRM — contacts, prospection et dashboard",
   "type": "module",
   "main": "server.js",
   "engines": {
@@ -10,10 +10,11 @@
   },
   "scripts": {
     "start": "node server.js",
-    "build": "node --check server.js && node --check crm-server.js && node --check site-audit.js && node --check contact-policy.js && node --check outreach.js && node --check mail-service.js && node --check static/outreach-ui.js && node --check static/audit.js && node --check static/app.js && node --check static/dashboard.js && node --check entities.js && node --check static/entities-ui.js && node --check commercial.js && node --check static/commercial-ui.js && node --check digital-audit.js && node --check audit-engine-server.js && node --check audit-report.js && node --check static/digital-audit-ui.js && node --check qualification-rules.js && node --check qualification.js && node --check static/qualification-ui.js",
+    "build": "node --check server.js && node --check crm-server.js && node --check site-audit.js && node --check contact-policy.js && node --check outreach.js && node --check mail-service.js && node --check static/outreach-ui.js && node --check static/audit.js && node --check static/app.js && node --check static/dashboard.js && node --check entities.js && node --check static/entities-ui.js && node --check commercial.js && node --check static/commercial-ui.js && node --check digital-audit.js && node --check audit-engine-server.js && node --check audit-report.js && node --check static/digital-audit-ui.js && node --check qualification-rules.js && node --check qualification.js && node --check ai/providers/gemini.js && node --check ai/providers/index.js && node --check ai/providers/errors.js && node --check static/qualification-ui.js",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {
+    "@google/genai": "2.32.0",
     "cheerio": "^1.2.0",
     "express": "5.3.0",
     "imapflow": "^2.10.0",

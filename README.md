@@ -143,7 +143,7 @@ Voir [DIGITAL_AUDIT_ENGINE.md](DIGITAL_AUDIT_ENGINE.md) pour l’architecture r�
 ### Phase 4 — Qualification IA
 
 L’onglet **Qualification IA** des entreprises sépare Fit, Need et Intent, conserve
-les preuves et décisions manuelles, et propose une synthèse OpenAI uniquement sur
+les preuves et décisions manuelles, et propose une synthèse Gemini uniquement sur
 une demande individuelle payante. Sans clé, les scores locaux restent disponibles.
 Configuration, méthode, budgets, sécurité et limites :
 [AI_LEAD_QUALIFICATION.md](AI_LEAD_QUALIFICATION.md).
