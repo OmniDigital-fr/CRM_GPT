@@ -23,11 +23,12 @@ function registry(siren=sirens[0],patch={}){
 const registryResponse=results=>Response.json({results,total_pages:1});
 const html=(url,body,status=200)=>({url,status,contentType:'text/html',ttfbMs:100,bytes:body.length,html:body,redirects:[]});
 const base='/api/discovery';
-async function fixture(t,{fetcher=async()=>registryResponse([registry()]),inspect=async url=>html(url,'<h1>SIREN 732 829 320</h1>'),runner,auth=false,qualification}={}){
+async function fixture(t,{fetcher=async()=>registryResponse([registry()]),inspect=async url=>html(url,'<h1>SIREN 732 829 320</h1>'),runner,auth=false,qualification,enrichment}={}){
   const db=openDatabase(':memory:');
   const app=createApp({db,fetcher,inspect,config:{user:auth?'admin':'',password:'test-password',publicUrl:'https://crm2.omnidigital.fr',pagespeedKey:'',qualification}});
   const service=app.locals.discovery;
   if(runner)service.runner=runner;
+  if(enrichment)service.enrichment=enrichment;
   const server=app.listen(0,'127.0.0.1');
   await once(server,'listening');
   const address='http://127.0.0.1:'+server.address().port;
@@ -277,4 +278,94 @@ test('published generic channels are sourced without importing personal contacts
   assert.deepEqual({...f.db.prepare('SELECT general_email,general_phone FROM companies').get()},
     {general_email:'contact@company.example.com',general_phone:'0123456789'});
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM contacts').get().n,0);
+});
+
+test('batch enriches verified domain with published general channels and keeps conflicting evidence out of import',async t=>{
+ const f=await fixture(t,{
+  enrichment:{enabled:true,key:'mock-only',batch:10,monthly:300},
+  fetcher:async url=>String(url).includes('brave.com')?Response.json({web:{results:[{url:'https://wrong.example/'},{url:'https://good.example/'}]}}):
+    registryResponse([registry(sirens[0],{date_creation:'2001-01-01',dirigeants:[{type_dirigeant:'personne physique',nom:'Exemple',prenoms:'Camille',qualite:'Présidente'}]}),
+      registry(sirens[1],{etat_administratif:'C'})]),
+  inspect:async url=>html(url,url.includes('wrong')?'Autre entreprise':url.endsWith('/contact')?
+    '<a href="mailto:info@good.example">Email</a><a href="tel:+33123456789">Standard</a><form></form>':
+    'SIREN 732 829 320 <a href="/contact">Contact</a><a href="mailto:contact@good.example">Email</a>')
+ });
+ const run=await f.search();
+ assert.equal(run.results.length,1);
+ const id=run.results[0].id,path=base+'/runs/'+run.id+'/enrich';
+ assert.equal((await f.request(path,{ids:[id]})).status,202);
+ await f.service.enrichmentJob?.work;
+ const result=(await f.request(base+'/runs/'+run.id)).data;
+ const [row]=result.results;
+ assert.equal(result.enrichment.done,1);
+ assert.equal(row.company.creation_date,'2001-01-01');
+ assert.equal(row.company.responsible[0].role,'Présidente');
+ assert.equal(row.verification.url,'https://good.example/');
+ assert.equal(row.verification.channels.phone,'0123456789');
+ assert.equal(row.verification.channels.email,undefined);
+ assert.equal(row.verification.fields.email.alternatives[0].value,'info@good.example');
+ assert.equal(row.verification.fields.form.url,'https://good.example/contact');
+ assert.equal(row.enrichment.options.length,2);
+ assert.equal((await act(f,id,'assisted',{field:'email',value:'contact@good.example',url:'https://www.pagesjaunes.fr/'})).status,200);
+ assert.equal((await approve(f,id)).status,200);
+ assert.equal((await f.request(base+'/import',{ids:[id]})).status,201);
+ const company=f.db.prepare('SELECT general_email,general_phone FROM companies').get();
+ assert.equal(company.general_email,'');
+ assert.equal(company.general_phone,'0123456789');
+ assert.equal(f.db.prepare('SELECT count(*) n FROM contacts').get().n,0);
+});
+
+test('enrichment stops on provider quota, resumes pending work and does not choose between matching domains',async t=>{
+ let searches=0;
+ const f=await fixture(t,{
+  enrichment:{enabled:true,key:'mock-only',batch:10,monthly:300},
+  fetcher:async url=>String(url).includes('brave.com')?(++searches===1?new Response('',{status:429}):
+    Response.json({web:{results:[{url:'https://first.example/'},{url:'https://second.example/'}]}})):registryResponse([registry()])
+ });
+ const run=await f.search(),path=base+'/runs/'+run.id+'/enrich';
+ await f.request(path,{ids:[run.results[0].id]});
+ await f.service.enrichmentJob?.work;
+ assert.equal(f.service.enrichmentStatus(run.id).state,'failed');
+ assert.match(f.service.enrichmentStatus(run.id).error,/Quota/);
+ assert.equal((await f.request(path,{resume:true})).status,202);
+ await f.service.enrichmentJob?.work;
+ const [row]=f.service.view(run.id).results;
+ assert.equal(row.enrichment.status,'review');
+ assert.equal(row.enrichment.options.filter(option=>option.confirmed).length,2);
+ assert.equal(row.verification.confirmed,undefined);
+ assert.equal(f.service.enrichmentStatus(run.id).done,1);
+});
+
+test('cancellation preserves pending selection for a later resume',async t=>{
+ const f=await fixture(t,{
+  enrichment:{enabled:true,key:'mock-only',batch:10,monthly:300},
+  fetcher:async (url,options)=>String(url).includes('brave.com')?
+    new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true})):
+    registryResponse([registry()])
+ });
+ const run=await f.search(),path=base+'/runs/'+run.id+'/enrich';
+ await f.request(path,{ids:[run.results[0].id]});
+ assert.equal((await f.request(path+'/cancel',{})).status,200);
+ await f.service.enrichmentJob?.work;
+ assert.equal(f.service.enrichmentStatus(run.id).state,'cancelled');
+ assert.equal(f.service.enrichmentStatus(run.id).done,0);
+});
+
+test('opt-in search starts enrichment automatically, reuses cached results, and keeps an unverifiable site unconfirmed',async t=>{
+ let calls=0;
+ const f=await fixture(t,{
+  enrichment:{enabled:true,key:'mock-only',batch:1,monthly:300},
+  fetcher:async url=>String(url).includes('brave.com')?(calls++,Response.json({web:{results:[{url:'https://wrong.example/'}]}})):
+    registryResponse([registry()]),
+  inspect:async url=>html(url,'Page sans identifiant')
+ });
+ const run=await f.search({autoEnrich:true});
+ await f.service.enrichmentJob?.work;
+ const [row]=f.service.view(run.id).results;
+ assert.equal(row.enrichment.status,'review');
+ assert.equal(row.verification.confirmed,undefined);
+ assert.equal(calls,1);
+ assert.equal((await f.request(base+'/runs/'+run.id+'/enrich',{ids:[row.id]})).status,202);
+ await f.service.enrichmentJob?.work;
+ assert.equal(calls,1);
 });

@@ -51,13 +51,13 @@ async function requestPage(url,deadline){
     req.on('error',()=>reject(new AuditError('Impossible de joindre le site : délai dépassé, accès réseau ou certificat TLS à vérifier.')));
   });
 }
-export async function inspectWebsite(value,{deadline=Date.now()+18000,budget,request=requestPage}={}){
+export async function inspectWebsite(value,{deadline=Date.now()+18000,budget,request=requestPage,allowRedirect}={}){
   let url=siteUrl(value);const redirects=[];
   for(let i=0;i<5;i++){
     if(budget){if(budget.remaining<=0)throw new AuditError('Limite de requêtes atteinte.');budget.remaining--}
     const page=await request(url,deadline);
     if(!page.redirect)return {...page,redirects};
-    let next;try{next=siteUrl(new URL(page.redirect,url).href);redirects.push({from:url.href,to:next.href,status:page.status||null});url=next}catch{throw new AuditError('Redirection vers une adresse invalide ou non autorisée.')}
+    let next;try{next=siteUrl(new URL(page.redirect,url).href);if(allowRedirect&&!allowRedirect(next))throw new AuditError('Redirection non autorisée.');redirects.push({from:url.href,to:next.href,status:page.status||null});url=next}catch{throw new AuditError('Redirection vers une adresse invalide ou non autorisée.')}
   }
   throw new AuditError('Trop de redirections pour analyser ce site.');
 }

@@ -53,18 +53,67 @@ Les données à diffusion restreinte sont exclues. Pour les entrepreneurs
 individuels, seules les fiches disposant d’une enseigne publique sont retenues,
 sans raison sociale personnelle ni adresse complète.
 
-Le registre fournit l’identité et l’activité. Le module attend un lien de site
-fourni pendant la revue. Il ne devine pas le domaine. Les recherches automatiques
-de domaines, Google Places et les autres fournisseurs d’enrichissement pourront
-être ajoutés séparément après validation des coûts et des conditions d’utilisation.
+Le registre fournit l’identité, l’activité et la date de création disponible.
+La fiche affiche jusqu’à trois dirigeants personnes physiques déclarés pour une
+personne morale, à vérifier. Elle ignore les dates de naissance, nationalités
+et autres champs personnels du registre. Un dirigeant déclaré ne devient pas
+un contact CRM. Les entreprises fermées restent exclues de la prospection.
+
+## Enrichissement et configuration Hostinger
+
+1. Dans **Prospection → Recherche de prospects**, utilisez **Enrichir automatiquement**
+   sur une fiche, ou cochez les lignes et lancez **Enrichir les prospects sélectionnés**.
+   Avec la recherche web activée, une case permet également d’enrichir les
+   premiers résultats après la recherche.
+2. La file exécute une fiche à la fois et conserve la progression en SQLite.
+   L’arrêt interrompt la recherche web et laisse se terminer la lecture HTML
+   bornée en cours. Après un arrêt ou redémarrage, **Reprendre l’enrichissement**
+   relance les fiches restantes. Les résultats sont mis en cache 24 heures
+   pour un même candidat. Les erreurs et quotas restent visibles dans le lot.
+3. Une correspondance exige un SIREN/SIRET visible sur la page ou ses mentions
+   légales. Jusqu’à trois domaines sont contrôlés. Si plusieurs correspondent,
+   ils restent à vérifier. Une recherche infructueuse décrit l’échantillon.
+4. Le CRM peut relever un email générique, un numéro de standard, un lien de
+   présentation, un lien LinkedIn d’entreprise et un formulaire HTML à partir
+   des pages du site confirmé. Il ne soumet aucun formulaire. Les coordonnées
+   contradictoires sont exclues de l’import. Les coordonnées saisies en
+   consultation assistée restent des observations temporaires. La complétude
+   suit sept groupes documentaires et reste indépendante du potentiel commercial.
+5. PagesJaunes et Société.com s’ouvrent dans des liens de consultation manuelle.
+   Les [CGU de PagesJaunes](https://www.pagesjaunes.fr/infoslegales/mentionslegales/)
+   excluent la constitution automatique de bases de prospection. [L’API Pro
+   Société.com](https://www.societe.com/solutions/api) est une offre distincte
+   et n’est pas utilisée ici. Le registre et l’Annuaire restent prioritaires.
+
+| Variable Hostinger | Fonction |
+| --- | --- |
+| `PROSPECT_BRAVE_ENABLED` | `false` par défaut. Activer explicitement après validation du plan et des conditions. |
+| `PROSPECT_BRAVE_API_KEY` | Clé serveur, à saisir dans hPanel. |
+| `PROSPECT_BRAVE_MONTHLY` | Plafond local par mois UTC, 300 par défaut, maximum 1 000. |
+| `PROSPECT_ENRICHMENT_BATCH` | 10 fiches par lot, configurable jusqu’à 25. |
+
+Le [tarif Brave Search](https://api-dashboard.search.brave.com/documentation/pricing)
+affiche 5 USD pour 1 000 recherches et 5 USD de crédits mensuels. Vérifier le
+compte, les conditions de réutilisation et tout achat automatique avant
+activation. Avec 300 appels, la valeur tarifaire est de 1,50 USD avant crédits.
+Le plafond local couvre seulement ce CRM. Sans clé, la vérification manuelle
+du site, les annuaires et les audits restent accessibles. Après configuration,
+redéployer l’application Node.js en conservant son répertoire SQLite persistant.
+Commencer par une entreprise publique connue, puis contrôler la preuve
+d’identité et la provenance des coordonnées avant d’approuver un import.
+
+Les coordonnées nominatives ne sont pas recherchées ni transmises à Gemini.
+L’analyse Gemini reste individuelle, après import, avec le régime de données et
+les plafonds existants. Pour toute réutilisation commerciale d’informations
+publiques, vérifier la finalité, les droits d’opposition et la conservation selon
+les [recommandations de la CNIL](https://www.cnil.fr/fr/la-reutilisation-des-donnees-publiquement-accessibles-en-ligne-des-fins-de-demarchage-commercial).
 
 ## Stockage, sécurité et coûts
 
 - Les tables SQLite `discovery_runs` et `discovery_candidates` isolent les
   candidats de la base commerciale. L’historique indique la date, les critères,
   les décisions, les correspondances, la source, les erreurs de recherche et
-  les requêtes au registre. Les résultats et compteurs temporaires sont purgés
-  au premier accès à la recherche après 30 jours. Les fiches importées et leurs
+  les requêtes au registre. Les résultats temporaires sont purgés après 30 jours et les compteurs après 32 jours, au premier accès à la recherche. Les fiches importées et leurs
   audits suivent la conservation habituelle du CRM.
 - Limites locales sur 24 h glissantes. Quarante requêtes au registre, vingt
   vérifications de sites, cinq audits préparatoires. Une seule recherche active
