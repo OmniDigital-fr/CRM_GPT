@@ -1,3 +1,4 @@
+import {guidedDraft} from './guided-outreach.js';
 import {initDiscovery, DiscoveryService, mountDiscovery, DiscoveryError} from './prospect-discovery.js';
 import {initQualification,QualificationService,mountQualification,readQualificationConfig,QualificationError} from './qualification.js';
 import {initDigitalAudit,DigitalAuditService,mountDigitalAudit} from './audit-engine-server.js';
@@ -303,9 +304,9 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
         if(req.body.status==='Opposition')suppress(db,p);
         if(['Pas intéressé','Perdu'].includes(req.body.status)){db.prepare("UPDATE prospects SET next_followup='' WHERE id=?").run(id);stopOutreach(db,id,'Refus commercial / dossier clôturé.');}
         history(db,id,'Changement de statut',p.status+' → '+req.body.status);
-      } else if (action==='draft') {
-        assertDraftAllowed(db,p);
-        const {subject,body,context}=draft(p);
+      } else if (action==='draft'||action==='guided-draft') {
+        if(action==='draft')assertDraftAllowed(db,p);
+        const {subject,body,context}=action==='guided-draft'?guidedDraft(db,p):draft(p);
         db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,internal_context) VALUES(?,?,?,?,?,?)').run(randomUUID().replaceAll('-',''),id,subject,body,now(),context);
       } else if(action==='reconsent'){
         if(req.body?.confirm!==id)throw new PolicyError('Confirmation du nouvel accord requise.');

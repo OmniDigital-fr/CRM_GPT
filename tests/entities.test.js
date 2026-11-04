@@ -32,3 +32,59 @@ test('opposition saves without a separately entered reason and remains enforceab
   assert.equal((await request(`/api/contacts/${c.id}/update`,{job_title:'Gérant'})).status,200);
  }
 });
+
+test('guided first email uses the digital audit, stores evidence separately and requires approval',async t=>{
+ const {request,db}=await fixture(t);
+ const cid=await company(request),c=await contact(request,cid);
+ const other=await contact(request,cid,'autre@example.fr');
+ await request(`/api/companies/${cid}/update`,{website:'https://example.com',notes:'Note interne confidentielle'});
+ const path=`/api/prospects/${c.prospect_id}/guided-draft`;
+ assert.equal((await request(path,{})).status,409);
+ const job=await request('/api/digital-audits',{company_id:cid});
+ assert.equal(job.status,202);
+ let audit;
+ for(let attempt=0;attempt<50;attempt++){
+  const state=(await request(`/api/digital-audits/jobs/${job.data.id}`)).data;
+  if(state.audit_id){audit=state.audit_id;break}
+  await new Promise(resolve=>setTimeout(resolve,10));
+ }
+ assert.ok(audit);
+ const outcomes=await Promise.all([request(path,{}),request(path,{})]);
+ assert.deepEqual(outcomes.map(r=>r.status).sort(),[200,409]);
+ const messages=db.prepare('SELECT * FROM messages').all();
+ assert.equal(messages.length,1);
+ const [message]=messages;
+ assert.equal(message.status,'Brouillon');
+ assert.equal(message.approved_at,'');
+ assert.equal(message.sent_at,'');
+ assert.match(message.body,/rendu sur mobile/);
+ assert.match(message.body,/calendar\.app\.google/);
+ assert.match(message.body,/stop/);
+ assert.doesNotMatch(message.body,/confidentielle|example\.com|page0-viewport/);
+ assert.ok(message.internal_context.includes(audit));
+ assert.match(message.internal_context,/page0-viewport/);
+ assert.equal((await request(`/api/prospects/${other.prospect_id}/guided-draft`,{})).status,409);
+ assert.equal((await request(`/api/messages/${message.id}/record-sent`,{confirm:message.id})).status,400);
+});
+
+test('guided email rejects old or unrelated audits, existing contact history and opposition',async t=>{
+ const {request,db}=await fixture(t);
+ const cid=await company(request),c=await contact(request,cid);
+ const url='https://example.com/';
+ await request(`/api/companies/${cid}/update`,{website:url});
+ const path=`/api/prospects/${c.prospect_id}/guided-draft`;
+ const now=new Date().toISOString();
+ const result={engine_version:3,execution_status:'completed',date:now,requestedUrl:url,url,
+  controls:[{id:'page0-viewport',status:'Amélioration recommandée',source:'HTML reçu',page_url:url}]};
+ const insert=db.prepare('INSERT INTO audits VALUES(?,?,NULL,?,?,?)');
+ insert.run('old',cid,JSON.stringify({...result,date:'2020-01-01T00:00:00.000Z'}),'Moteur digital v3',now);
+ assert.equal((await request(path,{})).status,409);
+ insert.run('redirected',cid,JSON.stringify({...result,url:'https://other.example/'}),'Moteur digital v3',now);
+ assert.equal((await request(path,{})).status,409);
+ insert.run('latest',cid,JSON.stringify(result),'Moteur digital v3',now);
+ await request(`/api/contacts/${c.id}/update`,{last_reply_at:now.slice(0,10)});
+ assert.match((await request(path,{})).data.error,/historique/);
+ await request(`/api/contacts/${c.id}/update`,{email_opt_out:true});
+ assert.match((await request(path,{})).data.error,/prospection par email/);
+ assert.equal(db.prepare('SELECT count(*) n FROM messages').get().n,0);
+});
