@@ -10,7 +10,7 @@ import {QualificationService,readQualificationConfig} from '../qualification.js'
 // Execute the production renderers against real API fixtures. This deliberately
 // does not claim to replace browser layout or accessibility tree verification.
 async function ui(t,{configured=false}={}){
-  const db=openDatabase(':memory:'),service=new QualificationService({db,config:readQualificationConfig({OPENAI_API_KEY:configured?'unit-test-key':''})}),app=createApp({db,config:{user:'',password:'',publicUrl:'',pagespeedKey:''},qualificationService:service});
+  const db=openDatabase(':memory:'),service=new QualificationService({db,config:readQualificationConfig({GEMINI_API_KEY:configured?'unit-test-key':'',GEMINI_BILLING_MODE:'paid',GEMINI_ALLOW_CRM_DATA:'true'})}),app=createApp({db,config:{user:'',password:'',publicUrl:'',pagespeedKey:''},qualificationService:service});
   const server=app.listen(0,'127.0.0.1');await once(server,'listening');
   const api=async(path,data)=>{const r=await fetch('http://127.0.0.1:'+server.address().port+path,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const json=await r.json();if(!r.ok)throw Error(json.error);return json;};
   t.after(async()=>{await service.close();await app.locals.digitalAudit.close();await new Promise(r=>server.close(r));db.close();});
@@ -26,7 +26,7 @@ test('company record embeds Qualification IA, disabled API state, manual decisio
   const f=await ui(t);await vm.runInContext(`entityOpen('companies','${f.company.id}')`,f.ctx);
   const $=load(f.dialogs[0].innerHTML);
   assert.ok($('[role=tab]').toArray().some(el=>$(el).text()==='Qualification IA'));
-  assert.equal($('.qualification-score').length,3);assert.equal($('[data-qual-ai] button[disabled]').length,1);assert.match($('.qualification-root').text(),/Clé OpenAI non configurée/);assert.match($('.qualification-root').text(),/Inconnue/);
+  assert.equal($('.qualification-score').length,3);assert.equal($('[data-qual-ai] button[disabled]').length,1);assert.match($('.qualification-root').text(),/Clé Gemini non configurée/);assert.match($('.qualification-root').text(),/Inconnue/);
   assert.equal($('[data-qual-service]').length,12);assert.equal($('[data-qual-priority]').length,1);assert.equal($('[data-qual-signal]').length,1);
 });
 test('all company list sort and filter modes execute without renderer errors and display independent scores',async t=>{
@@ -45,4 +45,16 @@ test('malicious company/audit/model text is escaped in current and historical re
   assert.equal($('script,img,[onerror]').length,0);assert.match($.text(),/onerror/);assert.equal($('[data-qual-ai] button[disabled]').length,0);
   const malicious={summary:evil,target_fit:evil,needs:[{text:evil,evidence_ids:['fit:Effectif']}],recommended_services:[],objections_hypotheses:[evil],approach:evil,next_action:evil,missing_information:[evil],confidence:'Faible'};
   f.ctx.malicious=malicious;assert.equal(load(vm.runInContext('qualificationAnalysis(malicious)',f.ctx))('script,img,[onerror]').length,0);
+});
+
+
+test('AI settings render connection action, limits and safe integration status',async t=>{
+  const f=await ui(t);
+  f.ctx.geminiStatus=await f.api('/api/qualification/status');
+  const $=load(vm.runInContext('qualificationSettings(geminiStatus)',f.ctx));
+  assert.match($('h2').text(),/Intelligence artificielle.*Gemini/);
+  assert.match($.text(),/gemini-3.5-flash-lite/);
+  assert.match($.text(),/0 \/ 15 aujourd’hui/);
+  assert.equal($('[data-gemini-test][disabled]').length,1);
+  assert.equal($('input').length,0);
 });
