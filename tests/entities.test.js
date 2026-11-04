@@ -111,3 +111,17 @@ test('structured contact deletion requires confirmation and preserves company da
  assert.equal((await request('/api/contacts',{company_id:cid,email:'autre@example.fr'})).status,201);
  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
 });
+
+test('company deletion confirms the exact company, protects contacts and removes completed audits',async t=>{
+ const {request,db}=await fixture(t);
+ const cid=await company(request),c=await contact(request,cid);
+ const path=`/api/companies/${cid}/delete`;
+ assert.equal((await request(path,{})).status,400);
+ assert.equal((await request(path,{confirm:cid})).status,409);
+ assert.equal((await request(`/api/contacts/${c.id}/delete`,{confirm:c.id})).status,200);
+ db.prepare('INSERT INTO audits VALUES(?,?,?,?,?,?)').run('audit-to-remove',cid,null,'{}','Test',new Date().toISOString());
+ assert.equal((await request(path,{confirm:cid})).status,200);
+ assert.equal((await request(`/api/companies/${cid}`)).status,404);
+ assert.equal(db.prepare('SELECT count(*) n FROM audits WHERE company_id=?').get(cid).n,0);
+ assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+});

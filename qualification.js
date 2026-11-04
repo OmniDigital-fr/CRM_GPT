@@ -188,7 +188,7 @@ export class QualificationService {
       this.db.prepare("UPDATE qualifications SET state='interrupted',error_code='process_interrupted',finished_at=? WHERE state='running' AND created_at<?").run(date,expired);
       if(this.db.prepare("SELECT 1 FROM qualification_ai_calls WHERE state='running' UNION ALL SELECT 1 FROM qualifications WHERE state='running' LIMIT 1").get())fail('Un appel IA est déjà en cours.',429);
       if(isAnalysis){
-        const existing=this.db.prepare("SELECT qualification_id FROM qualification_ai_calls WHERE fingerprint=? AND state='completed' AND created_at>=? ORDER BY created_at DESC LIMIT 1")
+        const existing=this.db.prepare("SELECT qualification_id FROM qualification_ai_calls WHERE fingerprint=? AND qualification_id IS NOT NULL AND state='completed' AND created_at>=? ORDER BY created_at DESC LIMIT 1")
           .get(fingerprint,new Date(Date.now()-15*60_000).toISOString());
         if(existing)return existing.qualification_id;
         const recent=this.db.prepare("SELECT created_at FROM qualifications WHERE company_id=? AND mode='ai' ORDER BY created_at DESC,rowid DESC LIMIT 1").get(companyId);
