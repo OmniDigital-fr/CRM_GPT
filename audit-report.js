@@ -42,7 +42,7 @@ export function digitalAuditPdf(audit,company,{audience='commercial'}={}){
   title('Priorités à vérifier');
   if(!overview.priorities.length)p('Aucune piste suffisamment documentée dans les contrôles disponibles.');
   for(const [index,x] of overview.priorities.entries()){
-   const lines=[['Constat',x.observation],['Effet possible',x.impact],['Action proposée',x.action]].filter(([,value])=>value);
+   const lines=[['Constat',x.observation],['Action proposée',x.action],['Effet possible',x.impact]].filter(([,value])=>value);
    doc.font('AuditSans').fontSize(9.5);
    const height=lines.reduce((sum,[label,value])=>sum+doc.heightOfString(text(label+' : '+value),{width,lineGap:2})+6,40);
    ensure(height);
@@ -69,21 +69,27 @@ export function digitalAuditPdf(audit,company,{audience='commercial'}={}){
    item(strategy==='mobile'?'Mobile':'Ordinateur',psi?.state==='available'?'Source : Google PageSpeed Insights / Lighthouse. Les résultats varient selon les conditions.':psi?.message||'Non mesuré.');
    if(psi?.state!=='available')continue;
    p('Scores de laboratoire : '+Object.entries(psi.scores||{}).map(([k,v])=>k+' '+v+'/100').join(' | '));
-   for(const metric of Object.values(psi.lab||{}))p(metric.label+' : '+(metric.value===null?'Non disponible':metric.value+' '+metric.unit)+' (laboratoire)',{small:true});
-   for(const [name,metric]of Object.entries(psi.field||{}))p(name+' : '+(metric.value===null?'Non disponible':metric.value+' '+metric.unit)+' | terrain CrUX, portée '+metric.scope+' (75e percentile)',{small:true});
+   for(const metric of Object.values(psi.lab||{}).filter(metric=>metric.value!=null))p(metric.label+' : '+(metric.value===null?'Non disponible':metric.value+' '+metric.unit)+' (laboratoire)',{small:true});
+   const field=Object.entries(psi.field||{}).filter(([,metric])=>metric.value!=null);
+   if(!field.length)p('Aucune mesure de visiteurs réels disponible.',{small:true});
+   for(const [name,metric]of field)p(name+' : '+(metric.value===null?'Non disponible':metric.value+' '+metric.unit)+' | terrain CrUX, portée '+metric.scope+' (75e percentile)',{small:true});
   }
  }
  if(audience==='technical'){
-  title('Contrôles, preuves et recommandations');
-  p('Les contrôles distinguent présence, absence observée, recommandation et impossibilité de vérification.');
+  title('Points à examiner');
+  p('Les preuves complètes et les contrôles individuels sont disponibles dans le CRM, sous Détails et mesures.');
   const groups=new Map();
   for(const control of r.controls||[]){
    if(!groups.has(control.category))groups.set(control.category,[]);
    groups.get(control.category).push(control);
   }
   for(const [category,controls] of groups){
+   const attention=controls.filter(c=>['Erreur critique','Problème important','Amélioration recommandée'].includes(c.status));
+   const satisfied=controls.filter(c=>c.status==='Conforme au contrôle').length;
+   const unknown=controls.filter(c=>c.status==='Non vérifié').length;
    title(category);
-   for(const c of controls)item(c.label+' ['+c.status+']',c.evidence+'\nPage : '+c.page_url+' | Source : '+c.source+' | Confiance : '+c.confidence+(c.recommendation?'\nAction : '+c.recommendation:''));
+   p(attention.length+' à examiner | '+satisfied+' satisfaits | '+unknown+' non vérifiés',{small:true});
+   for(const c of attention)item(c.label+' ['+c.status+']',c.evidence+'\nPage : '+c.page_url+' | Source : '+c.source+' | Confiance : '+c.confidence+(c.recommendation?'\nAction : '+c.recommendation:''));
   }
   title('Limites et vérifications restantes');
   p(r.summary?.message||'Aucun résultat ne doit être extrapolé au site entier sans vérification complémentaire.');

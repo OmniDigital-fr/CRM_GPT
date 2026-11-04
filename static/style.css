@@ -50,3 +50,5 @@ aside{overflow-y:auto}
 .discovery-workspace input[type=checkbox]{width:auto;min-height:0}
 .discovery-record form{margin:14px 0;padding-top:10px;border-top:1px solid var(--line)}
 .discovery-record a,.discovery-workspace td a{overflow-wrap:anywhere}
+
+.digital-priorities{display:grid;gap:12px;margin:14px 0}.digital-check-group,.digital-check{border-top:1px solid var(--line);padding:10px 0}.digital-check-group summary,.digital-check summary{cursor:pointer}.digital-check-group>.digital-check,.digital-check-group>details{margin-left:16px}.digital-check small{color:var(--muted)}
