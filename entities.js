@@ -87,6 +87,24 @@ function deleteEntityContact(db,key,confirm){
  log(db,contact.company_id,null,'Contact supprimé');
  return {company_id:contact.company_id};
 }
+function deleteCompany(db,key,confirm){
+ if(confirm!==key)throw new EntityError('Confirmation de suppression requise.');
+ const company=get(db,'companies',key);
+ if(db.prepare('SELECT 1 FROM contacts WHERE company_id=?').get(key))
+  throw new EntityError('Cette entreprise a des contacts. Supprimez-les individuellement avant de supprimer l’entreprise.',409);
+ if(db.prepare('SELECT 1 FROM opportunities WHERE company_id=? UNION ALL SELECT 1 FROM commercial_tasks WHERE company_id=? LIMIT 1').get(key,key))
+  throw new EntityError('Cette entreprise est liée à des opportunités ou à des tâches. La suppression est bloquée pour préserver le suivi commercial.',409);
+ if(db.prepare("SELECT 1 FROM digital_audit_jobs WHERE company_id=? AND state IN ('queued','running') UNION ALL SELECT 1 FROM qualifications WHERE company_id=? AND state='running' LIMIT 1").get(key,key))
+  throw new EntityError('Un audit ou une qualification est en cours. Réessayez après sa fin.',409);
+ if(company.business_status==='Opposition')rememberSuppression(db,{id:key,company:company.name});
+ db.prepare('DELETE FROM qualification_usage WHERE id IN (SELECT id FROM qualifications WHERE company_id=?)').run(key);
+ for(const table of ['qualifications','qualification_signals','qualification_manual','qualification_decisions',
+  'digital_audit_jobs','audits','interactions','commercial_events'])
+  db.prepare(`DELETE FROM ${table} WHERE company_id=?`).run(key);
+ db.prepare("UPDATE discovery_candidates SET imported_id=NULL,decision='rejected' WHERE imported_id=?").run(key);
+ db.prepare('DELETE FROM companies WHERE id=?').run(key);
+ return {ok:true};
+}
 export function mountEntities(app,db,{config,fetcher,inspect,consumePsi,legacyAudit=fn=>fn()}){
  app.get('/api/entities/meta',(req,res)=>res.json({company_fields:COMPANY_FIELDS,contact_fields:CONTACT_FIELDS,choices:CHOICES}));
  app.get('/api/companies',(req,res)=>{
@@ -94,6 +112,7 @@ export function mountEntities(app,db,{config,fetcher,inspect,consumePsi,legacyAu
   const sort=['name','created_at','opportunity_score'].includes(req.query.sort)?req.query.sort:'name';rows.sort((a,b)=>sort==='opportunity_score'?(b[sort]??-1)-(a[sort]??-1):sort==='created_at'?b[sort].localeCompare(a[sort]):a[sort].localeCompare(b[sort],'fr'));res.json({companies:rows});
  });
  app.post('/api/companies',(req,res)=>res.status(201).json(tx(db,()=>saveCompany(db,req.body))));
+ app.post('/api/companies/:id/delete',(req,res)=>res.json(tx(db,()=>deleteCompany(db,req.params.id,req.body?.confirm))));
  app.post('/api/companies/:id/update',(req,res)=>res.json(tx(db,()=>saveCompany(db,req.body,req.params.id))));
  app.get('/api/companies/:id',(req,res)=>{const c=get(db,'companies',req.params.id);res.json({...c,...relatedCommercial(db,{company_id:c.id}),contacts:db.prepare('SELECT * FROM contacts WHERE company_id=?').all(c.id),audits:db.prepare('SELECT * FROM audits WHERE company_id=? ORDER BY created_at DESC').all(c.id),interactions:db.prepare('SELECT * FROM interactions WHERE company_id=? ORDER BY created_at DESC,rowid DESC').all(c.id),possible_duplicates:possible(db,c,c.id)})});
  app.post('/api/companies/:id/audit',async(req,res)=>{

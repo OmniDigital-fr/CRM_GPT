@@ -132,7 +132,11 @@ function openDeleteDialog(id,name,kind,returnToCompany=false){
  const dialog=$('#delete-modal');
  Object.assign(dialog.dataset,{id,kind,returnToCompany:String(returnToCompany)});
  $('#delete-name').textContent=name;
- $('#delete-company-retained').hidden=kind!=='contacts';
+ $('#delete-title').textContent=kind==='companies'?'Supprimer cette entreprise ?':'Supprimer ce contact ?';
+ $('#delete-description').textContent=kind==='companies'
+  ?'La fiche entreprise, ses audits, ses qualifications et son historique seront supprimés définitivement. La suppression est bloquée si des contacts, opportunités ou tâches sont encore associés.'
+  :'La fiche et son historique de contact seront supprimés définitivement. Les oppositions à la prospection restent enregistrées.'+
+   (kind==='contacts'?' L’entreprise, ses audits, opportunités et tâches seront conservés.':'');
  dialog.showModal();
 }
 $('#cancel-delete').onclick=()=>$('#delete-modal').close();
@@ -143,15 +147,15 @@ $('#confirm-delete').onclick=async()=>{
  try{
   const result=await api(`/api/${kind}/${id}/delete`,{confirm:id});
   dialog.close();
-  if(kind==='contacts'&&entityDialog.open)entityDialog.close();
+  if(kind!=='prospects'&&entityDialog.open)entityDialog.close();
   try{
    await refresh();
    if(returnToCompany==='true'){
     await entityOpen('companies',result.company_id);
     entityDialog.querySelector('[data-entity-tab="1"]')?.click();
    }
-   notice('Contact et dossier associé supprimés.');
-  }catch(error){notice('Contact supprimé. Actualisation impossible : '+error.message);}
+   notice(kind==='companies'?'Entreprise supprimée.':'Contact et dossier associé supprimés.');
+  }catch(error){notice('Suppression effectuée. Actualisation impossible : '+error.message);}
  }catch(error){$('#delete-error').textContent=error.message;}
  finally{button.disabled=false;}
 };
