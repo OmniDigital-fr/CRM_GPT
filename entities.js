@@ -1,7 +1,7 @@
 import {relatedCommercial} from './commercial.js';
 import {randomUUID} from 'node:crypto';
-import {CONTACT_STATUSES,PolicyError,suppressed,suppress,history} from './contact-policy.js';
-import {stopOutreach} from './outreach.js';
+import {CONTACT_STATUSES,PolicyError,suppressed,suppress,history,isOpposed,rememberSuppression} from './contact-policy.js';
+import {stopOutreach,deleteProspectData} from './outreach.js';
 import {auditWebsite} from './site-audit.js';
 export class EntityError extends Error { constructor(message,status=400){super(message);this.status=status} }
 const id=()=>randomUUID().replaceAll('-','');
@@ -69,6 +69,24 @@ export function restrictedIdentity(db,p,exclude=''){
  const email=String(p.email||'').trim().toLowerCase(),phones=[p.phone,p.mobile].map(v=>String(v||'').replace(/\D/g,'')).filter(Boolean);
  return db.prepare('SELECT * FROM contacts WHERE id<>? AND (email_opt_out=1 OR phone_opt_out=1)').all(exclude).some(c=>(c.email_opt_out&&email&&c.email.toLowerCase()===email)||(c.phone_opt_out&&[c.phone,c.mobile].some(v=>phones.includes(String(v||'').replace(/\D/g,'')))));
 }
+function deleteEntityContact(db,key,confirm){
+ if(confirm!==key)throw new EntityError('Confirmation de suppression requise.');
+ const contact=get(db,'contacts',key);
+ const prospect=get(db,'prospects',contact.prospect_id);
+ if(db.prepare("SELECT 1 FROM messages WHERE prospect_id=? AND status IN ('Envoi en cours','À vérifier')").get(prospect.id))
+  throw new EntityError('Attendez la fin de l’envoi ou vérifiez sa livraison avant de supprimer ce contact.',409);
+ const opposed=isOpposed(prospect)||contact.contact_status==='Opposition';
+ const phoneOpposed=opposed||contact.phone_opt_out||prospect.do_not_call==='Oui'||prospect.do_not_sms==='Oui';
+ rememberSuppression(db,{id:prospect.id,email:opposed||contact.email_opt_out||prospect.do_not_email==='Oui'?contact.email:'',
+  phone:phoneOpposed?contact.phone:'',mobile:phoneOpposed?contact.mobile:''});
+ for(const table of ['audits','opportunities','commercial_tasks','commercial_events'])
+  db.prepare(`UPDATE ${table} SET contact_id=NULL WHERE contact_id=?`).run(key);
+ db.prepare('DELETE FROM interactions WHERE contact_id=?').run(key);
+ db.prepare('DELETE FROM contacts WHERE id=?').run(key);
+ deleteProspectData(db,prospect.id);
+ log(db,contact.company_id,null,'Contact supprimé');
+ return {company_id:contact.company_id};
+}
 export function mountEntities(app,db,{config,fetcher,inspect,consumePsi,legacyAudit=fn=>fn()}){
  app.get('/api/entities/meta',(req,res)=>res.json({company_fields:COMPANY_FIELDS,contact_fields:CONTACT_FIELDS,choices:CHOICES}));
  app.get('/api/companies',(req,res)=>{
@@ -88,6 +106,7 @@ export function mountEntities(app,db,{config,fetcher,inspect,consumePsi,legacyAu
  });
  app.get('/api/contacts/:id',(req,res)=>{const c=get(db,'contacts',req.params.id);res.json({...c,...relatedCommercial(db,{contact_id:c.id}),company:get(db,'companies',c.company_id),interactions:db.prepare('SELECT * FROM interactions WHERE contact_id=? ORDER BY created_at DESC,rowid DESC').all(c.id),communications:db.prepare('SELECT id,subject,body,status,created FROM messages WHERE prospect_id=? ORDER BY created DESC').all(c.prospect_id)})});
  app.post('/api/contacts',(req,res)=>res.status(201).json(tx(db,()=>saveEntityContact(db,req.body))));
+ app.post('/api/contacts/:id/delete',(req,res)=>res.json(tx(db,()=>deleteEntityContact(db,req.params.id,req.body?.confirm))));
  app.post('/api/contacts/:id/update',(req,res)=>res.json(tx(db,()=>saveEntityContact(db,req.body,req.params.id))));
  app.post('/api/interactions',(req,res)=>res.status(201).json(tx(db,()=>{const d=req.body;if(!d||typeof d.detail!=='string'||!d.detail.trim()||d.detail.length>20000)throw new EntityError('Décrivez l’interaction.');const c=get(db,'companies',d.company_id);if(d.contact_id&&get(db,'contacts',d.contact_id).company_id!==c.id)throw new EntityError('Contact d’une autre entreprise.');log(db,c.id,d.contact_id||null,'Note de suivi',d.detail.trim());return {ok:true}})));
 }

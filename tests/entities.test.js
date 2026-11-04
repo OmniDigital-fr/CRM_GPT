@@ -88,3 +88,26 @@ test('guided email rejects old or unrelated audits, existing contact history and
  assert.match((await request(path,{})).data.error,/prospection par email/);
  assert.equal(db.prepare('SELECT count(*) n FROM messages').get().n,0);
 });
+
+test('structured contact deletion requires confirmation and preserves company data and opposition',async t=>{
+ const {request,db}=await fixture(t);
+ const cid=await company(request),c=await contact(request,cid);
+ const path=`/api/contacts/${c.id}/delete`;
+ assert.equal((await request(path,{})).status,400);
+ await request(`/api/prospects/${c.prospect_id}/draft`,{});
+ db.prepare("UPDATE messages SET status='À vérifier' WHERE prospect_id=?").run(c.prospect_id);
+ assert.equal((await request(path,{confirm:c.id})).status,409);
+ db.prepare("UPDATE messages SET status='Brouillon' WHERE prospect_id=?").run(c.prospect_id);
+ await request(`/api/contacts/${c.id}/update`,{email_opt_out:true});
+ db.prepare('INSERT INTO audits VALUES(?,?,?,?,?,?)').run('linked-audit',cid,c.id,'{}','Test',new Date().toISOString());
+ assert.equal((await request(path,{confirm:c.id})).status,200);
+ assert.equal((await request(`/api/contacts/${c.id}`)).status,404);
+ const companyRow=(await request(`/api/companies/${cid}`)).data;
+ assert.equal(companyRow.contacts.length,0);
+ assert.equal(companyRow.audits[0].contact_id,null);
+ assert.equal(db.prepare('SELECT count(*) n FROM prospects WHERE id=?').get(c.prospect_id).n,0);
+ assert.equal(db.prepare('SELECT count(*) n FROM messages WHERE prospect_id=?').get(c.prospect_id).n,0);
+ assert.equal((await request('/api/contacts',{company_id:cid,email:'paulo@example.fr'})).status,409);
+ assert.equal((await request('/api/contacts',{company_id:cid,email:'autre@example.fr'})).status,201);
+ assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
+});
