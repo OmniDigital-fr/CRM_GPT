@@ -245,7 +245,7 @@ test('an imported company reuses configured Gemini only on explicit qualificatio
     requests++;
     assert.match(String(url),/^https:\/\/generativelanguage.googleapis.com\//);
     assert.doesNotMatch(options.body,/732829320|SOCIETE|secret@example.com/);
-    const payload={summary:'Une fiche publique est disponible.',target_fit:'Une adéquation à vérifier.',needs:[],recommended_services:[],
+    const payload={project_potential:'Périmètre et décision à confirmer.',recurring_potential:'Besoin de suivi à confirmer.',meeting_questions:[],summary:'Une fiche publique est disponible.',target_fit:'Une adéquation à vérifier.',needs:[],recommended_services:[],
       objections_hypotheses:[],approach:'Vérifier la situation de l’entreprise.',next_action:'Confirmer les informations publiques.',
       missing_information:['Données du site'],confidence:'Faible'};
     return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(payload)}]}}]});

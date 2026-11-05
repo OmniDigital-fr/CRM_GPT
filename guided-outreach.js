@@ -1,3 +1,4 @@
+import {transformationEmail,buildTransformationDiagnostic,readTransformationContext} from './transformation.js';
 import {PolicyError,assertDraftAllowed} from './contact-policy.js';
 
 const MAX_AUDIT_AGE = 90 * 24 * 60 * 60 * 1000;
@@ -16,7 +17,7 @@ function siteHost(value) {
   }
 }
 
-export function guidedDraft(db,prospect) {
+export function guidedDraft(db,prospect,config={}) {
   assertDraftAllowed(db,prospect);
   const contact=db.prepare(`SELECT c.company_id,c.email_opt_out,c.email_verified_status,
     co.website,co.business_status,co.company_status FROM contacts c
@@ -43,11 +44,12 @@ export function guidedDraft(db,prospect) {
     Array.isArray(result?.controls);
   const observation=usable&&observations.find(item=>result.controls.some(control=>
     control?.id===item.id&&control.status===item.status&&control.source==='HTML reçu'&&control.page_url===result.url));
-  if(!observation)throw new PolicyError('Aucun constat exploitable sur la page auditée dans le dernier audit. Vérifiez le site ou relancez Audit digital.',409);
-  const company=String(prospect.company||'').replace(/\s+/g,' ').trim().slice(0,140);
-  return {
-    subject:observation.subject,
-    body:`Bonjour,\n\nJe vous contacte de la part d’OmniDigital au sujet du site de ${company}. ${observation.text}\n\nSi ce point vous intéresse, seriez-vous disponible pour un échange de 15 minutes ? Vous pouvez me répondre directement ou choisir un créneau : https://calendar.app.google/d2Cz8bKbXN6zfxsX6\n\nBien cordialement,\nOmniDigital\nhttps://omnidigital.fr\n\nSi vous ne souhaitez plus recevoir de messages de notre part, répondez simplement « stop ».`,
-    context:`Brouillon ciblé · Audit ${audit.id} · ${result.date.slice(0,10)} · contrôle ${observation.id}. Vérifier le constat avant approbation.`
-  };
+  if(contact.website&&!usable)throw new PolicyError('Relancez Audit digital sur le site enregistré avant de préparer cet email.',409);
+  const context=readTransformationContext(db,contact.company_id);
+  const diagnostic=buildTransformationDiagnostic(context);
+  return transformationEmail(prospect,{
+    config,observation:observation?.text||'',
+    context:observation?'Brouillon ciblé · Audit '+audit.id+' · '+result.date.slice(0,10)+' · contrôle '+observation.id+'. Vérifier le constat avant approbation.':
+     diagnostic.presence.status+' · '+diagnostic.project
+  });
 }

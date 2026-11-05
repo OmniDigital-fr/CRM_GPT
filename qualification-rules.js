@@ -1,8 +1,10 @@
+import {TRANSFORMATION_SERVICES} from './transformation.js';
 // Scores are deterministic. AI may explain evidence, never assign scores or act.
 export const METHODOLOGY_VERSION = 'omni-qualification-1.0';
 export const PRIORITIES = ['Priorité haute','Priorité moyenne','Priorité basse','Données insuffisantes'];
 export const SIGNAL_TYPES = ['Demande d’informations','Réponse positive','Demande de devis','Rendez-vous confirmé','Projet annoncé','Refus explicite','Besoin confirmé'];
 export const DEFAULT_SERVICES = [
+  ...TRANSFORMATION_SERVICES,
   ['creation-site','Création de site web','Créer un site adapté à un besoin confirmé.'],
   ['refonte','Refonte de site web','Repenser un site et son parcours après diagnostic.'],
   ['maintenance','Maintenance WordPress','Suivi technique d’un site WordPress confirmé.'],

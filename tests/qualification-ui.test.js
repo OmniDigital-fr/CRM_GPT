@@ -19,7 +19,7 @@ async function ui(t,{configured=false}={}){
   const document={body:{append(d){dialogs.push(d);}},createElement(){return {dataset:{},setAttribute(){},open:false,innerHTML:'',showModal(){this.open=true;},close(){this.open=false;}};},addEventListener(type,fn){(listeners[type]??=[]).push(fn);}};
   const state={...(await api('/api/companies')),...(await api('/api/contacts')),entityMeta:await api('/api/entities/meta'),qualificationIndex:(await api('/api/qualification/companies')).companies};
   const ctx=vm.createContext({document,api,state,view:'companies',$:()=>({value:''}),relatedCommercialHtml:()=>'<p>Suivi commercial conservé</p>',esc:v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),notice(){},refresh:async()=>{},Intl,Date,console});
-  for(const path of ['static/qualification-ui.js','static/entities-ui.js'])vm.runInContext(readFileSync(new URL('../'+path,import.meta.url),'utf8'),ctx,{filename:path});
+  for(const path of ['static/digital-audit-ui.js','static/qualification-ui.js','static/entities-ui.js'])vm.runInContext(readFileSync(new URL('../'+path,import.meta.url),'utf8'),ctx,{filename:path});
   return {db,api,ctx,company,dialogs,listeners};
 }
 test('company record embeds Qualification IA, disabled API state, manual decisions, evidence and catalogue using actual API data',async t=>{
@@ -27,7 +27,7 @@ test('company record embeds Qualification IA, disabled API state, manual decisio
   const $=load(f.dialogs[0].innerHTML);
   assert.ok($('[role=tab]').toArray().some(el=>$(el).text()==='Qualification IA'));
   assert.equal($('.qualification-score').length,3);assert.equal($('[data-qual-ai] button[disabled]').length,1);assert.match($('.qualification-root').text(),/Clé Gemini non configurée/);assert.match($('.qualification-root').text(),/Inconnue/);
-  assert.equal($('[data-qual-service]').length,12);assert.equal($('[data-qual-priority]').length,1);assert.equal($('[data-qual-signal]').length,1);
+  assert.equal($('[data-qual-service]').length,15);assert.equal($('[data-qual-priority]').length,1);assert.equal($('[data-qual-signal]').length,1);
 });
 test('all company list sort and filter modes execute without renderer errors and display independent scores',async t=>{
   const f=await ui(t);

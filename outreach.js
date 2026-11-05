@@ -1,3 +1,4 @@
+import {messageFooter} from './transformation.js';
 import {randomUUID} from 'node:crypto';
 import {assertDraftAllowed,history,suppress,isOpposed,suppressed,SCENARIOS,PolicyError} from './contact-policy.js';
 const id=()=>randomUUID().replaceAll('-','');
@@ -24,24 +25,23 @@ export function stopOutreach(db,prospectId,reason='Réponse reçue'){
  db.prepare("UPDATE messages SET status='Annulé',approved_at='' WHERE prospect_id=? AND status IN ('Brouillon','Approuvé')").run(prospectId);
  history(db,prospectId,'Séquence en pause',reason);
 }
-export function createSequence(db,p,draft,{audited=false}={}){
+export function createSequence(db,p,draft){
  assertDraftAllowed(db,p);
  if(db.prepare("SELECT id FROM outreach_sequences WHERE prospect_id=? AND state IN ('Active','En pause')").get(p.id))throw new PolicyError('Une séquence existe déjà pour ce contact. Consultez-la dans Emails.',409);
  const sequenceId=id(),created=date();db.prepare('INSERT INTO outreach_sequences VALUES(?,?,?,?)').run(sequenceId,p.id,'Active',created);
- const first=draft(p),base=`Bonjour${p.contact_name?' '+p.contact_name:''},\n\n`;
- const bodies=audited?[first.body,
-  base+'Je me permets de revenir vers vous à la suite de mon précédent message au sujet de votre site. Si le point évoqué vous intéresse, je peux vous en dire davantage ou en discuter avec vous.',
-  base+'Je fais suite à mon précédent message. Si le sujet fait partie de vos priorités, un court échange nous permettrait de vérifier ensemble le point évoqué.',
-  base+'Je clôture cet échange faute de retour. Si vous souhaitez reprendre le sujet plus tard, vous pouvez simplement répondre à ce message. Bonne continuation.'
- ]:[first.body,
-  base+`Je me permets de revenir vers vous au sujet de mon message concernant ${p.company}. Souhaitez-vous recevoir les points relevés sur votre présence en ligne ou en discuter lors d’un court échange ?`,
-  base+'Je reviens une dernière fois sur les pistes évoquées. Si le sujet est pertinent pour vous, nous pouvons commencer par clarifier votre priorité et les actions utiles à votre activité.',
-  base+'Sans retour de votre part, je clôture cette prise de contact et ne prévois plus de relance pour cette démarche. Vous pourrez nous recontacter si le sujet devient pertinent. Bonne continuation.'
+ const first=draft(p),base='Bonjour,\n\n';
+ const bodies=[first.body,
+  base+'Je fais suite à mon précédent message. Serait-il utile de faire le point sur vos outils et la manière dont ils accompagnent votre activité ? Un diagnostic de 20 minutes permettrait de préciser vos priorités, sans engagement.',
+  base+'Je reviens vers vous une dernière fois avant de clôturer cet échange. Si un sujet lié à vos outils ou à votre organisation mérite d’être étudié, je reste disponible pour en parler.',
+  base+'Je clôture cette prise de contact faute de retour. Vous pouvez simplement répondre à cet échange si le sujet devient pertinent. Bonne continuation.'
  ];
+ let preceding=first.body;
  for(let stage=0;stage<4;stage++){
-  const body=stage?bodies[stage]+'\n\nOmniDigital\nhttps://omnidigital.fr\n\nSi vous ne souhaitez plus être contacté, répondez simplement « stop ».':bodies[stage];
-  const subject=stage===0?first.subject:audited?'Re : '+first.subject:stage===3?`Dernier message de ma part — ${p.company}`:`Re : ${first.subject}`;
-  db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,sequence_id,sequence_stage,due_at,forecast_at,internal_context) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id(),p.id,subject,body,created,sequenceId,stage,stage===0?created:'',new Date(Date.parse(created)+stage*7*86400000).toISOString(),first.context||'');
+  const body=stage?bodies[stage]+(first.footer||messageFooter()):first.body;
+  const subject=stage?'Re : '+first.subject:first.subject;
+  const context=(first.context||'')+(stage?'\nMessage précédent à relire avant validation :\n'+preceding:'');
+  db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,sequence_id,sequence_stage,due_at,forecast_at,internal_context) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id(),p.id,subject,body,created,sequenceId,stage,stage===0?created:'',new Date(Date.parse(created)+stage*7*86400000).toISOString(),context);
+  preceding=body;
  }
  history(db,p.id,'Séquence préparée','Email initial + relances à J+7, J+14 et J+21 à titre indicatif. Chaque relance attend l’envoi confirmé de la précédente et une approbation individuelle.');
  return sequenceId;
@@ -105,6 +105,13 @@ export function messageAction(db,p,m,action,data){
   if(!p.email||!p.email.includes('@'))throw new PolicyError('Renseignez l’adresse email du contact avant d’approuver ce mail.');
   if(m.status!=='Brouillon')throw new PolicyError('Seul un brouillon actif peut être approuvé.');
   if(data.confirm!==m.id)throw new PolicyError('Confirmation individuelle requise.');
+  if(m.sequence_id){
+   const sequence=db.prepare('SELECT state FROM outreach_sequences WHERE id=?').get(m.sequence_id);
+   if(sequence?.state!=='Active'||p.last_response_date)throw new PolicyError('Une réponse ou une pause impose de revoir la suite de cet échange.',409);
+   const preceding=db.prepare('SELECT body FROM messages WHERE sequence_id=? AND sequence_stage<? ORDER BY sequence_stage DESC').all(m.sequence_id,m.sequence_stage);
+   if(preceding.length)db.prepare('UPDATE messages SET internal_context=? WHERE id=?').run(
+    'Historique de la séquence à la validation, du plus récent au plus ancien :\n'+preceding.map(row=>row.body).join('\n\n'),m.id);
+  }
   db.prepare("UPDATE messages SET status='Approuvé',approved_at=?,approved_recipient=? WHERE id=?").run(date(),p.email.trim().toLowerCase(),m.id);
   history(db,p.id,'Email approuvé',m.subject+' · Approbation enregistrée, aucun envoi effectué.');return;
  }
