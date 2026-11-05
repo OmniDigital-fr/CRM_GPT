@@ -63,10 +63,13 @@ Aucune nouvelle dépendance ni migration destructive.
 - OMNI_CONTACT_FORM_URL est facultative. Renseigner l’adresse HTTPS exacte du
   formulaire sur omnidigital.fr ou www.omnidigital.fr. Une valeur vide retire
   cette alternative. Le programme ne devine pas le chemin.
-- MAIL_SIGNATURE_HTML est facultative. Le CRM2 utilisait une signature texte.
-  Pour réutiliser une signature HTML existante, la renseigner sur le serveur.
-  Elle est ajoutée une seule fois. La signature texte standard des anciens
-  brouillons est remplacée uniquement dans leur rendu HTML.
+- La signature originale de CRM1 (400 × 200 px) est intégrée par défaut aux
+  emails HTML, en pièce jointe incorporée (CID), sans chargement depuis CRM1.
+  Une version texte avec les coordonnées est conservée. La signature se place
+  avant la mention d’opposition ; l’ancienne signature standard est remplacée.
+- MAIL_SIGNATURE_HTML est facultative et remplace cette image si renseignée.
+  La laisser vide sur Hostinger pour utiliser l’image originale. Aucun secret
+  supplémentaire ni changement de base de données n’est nécessaire.
 - Les paramètres Gemini, le régime de données et les plafonds restent applicables.
 
 Déployer après validation. Tester le rendu d’un email dans une boîte interne
