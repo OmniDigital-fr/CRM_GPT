@@ -57,14 +57,22 @@ $('#content').addEventListener('click',async e=>{let b=e.target.closest('button'
 
 const pdfReview=document.createElement('dialog');
 pdfReview.className='entity-dialog';
+pdfReview.id='pdf-review-modal';pdfReview.setAttribute('aria-label','Prévisualisation de l’import PDF');
 document.body.append(pdfReview);
 function showPdfReview(preview){
- const lines=preview.changes.map(field=>`<fieldset><legend>${esc(field.label)}</legend>
-  ${field.conflict?`<label><input type="radio" name="${esc(field.key)}" value="crm" required> CRM : ${esc(field.current)}</label>
-  <label><input type="radio" name="${esc(field.key)}" value="pdf"> PDF : ${esc(field.value)}</label>`:`<p>${esc(field.value)}</p>`}</fieldset>`).join('');
+ const fields=preview.fields||preview.changes;
+ const group=(target,title)=>`<section><h3>${title}</h3>${fields.filter(field=>field.target===target).map(field=>`<fieldset><legend>${esc(field.label)} · ${field.unchanged?'Déjà présent':field.conflict?'Choix requis':'À compléter'}</legend>
+  ${field.conflict?`<label><input type="radio" name="${esc(field.key)}" value="crm" required> Conserver le CRM : ${esc(field.current)}</label>
+  <label><input type="radio" name="${esc(field.key)}" value="pdf"> Utiliser le PDF : ${esc(field.value)}</label>`:`<p>${esc(field.value)}</p>`}</fieldset>`).join('')||'<p>Aucune donnée identifiée.</p>'}
+  ${(preview.missing||[]).some(field=>field.target===target)?`<details><summary>Champs absents du PDF</summary><p>${preview.missing.filter(field=>field.target===target).map(field=>esc(field.label)).join(' · ')}</p></details>`:''}</section>`;
  pdfReview.innerHTML=`<form><h2>Vérifier l’import PDF</h2><p>${esc(preview.company)}</p>
- <p>Seules l’identité et les coordonnées seront importées. Le CRM analysera le site enregistré.</p>
- ${lines||'<p>Aucune différence détectée.</p>'}<p role="alert"></p>
+ <p>Identité et coordonnées extraites du PDF : à vérifier avant confirmation. Le CRM réalisera son propre audit. Aucun email ne sera envoyé.</p>
+ ${(preview.warnings||[]).map(warning=>`<p class="duplicate-warning">${esc(warning)}</p>`).join('')}
+ ${group('company',preview.company_id?'Entreprise existante · compléter ou corriger':'Fiche Entreprise')}
+ ${group('contact',preview.contact_id?'Contact existant · compléter ou corriger':'Fiche Contact')}
+ <section><h3>Informations complémentaires · à vérifier</h3>${(preview.supplementary||[]).map(item=>`<p><strong>${esc(item.label)}</strong> : ${esc(item.value)}</p>`).join('')||'<p>Aucune information complémentaire identifiée.</p>'}</section>
+ <section><h3>Opportunités du PDF · hypothèses à confirmer</h3><p>Conservées dans l’historique de l’entreprise, séparément des constats du CRM. Aucun score ni email ne repose sur ces hypothèses.</p><pre>${esc((preview.opportunities||[]).join('\n')||'Aucune opportunité extraite.')}</pre></section>
+ <p>Les analyses, scores et propositions d’emails du PDF ne sont pas repris dans le diagnostic du CRM.</p><p role="alert"></p>
  <div class="actions"><button type="button">Annuler</button><button class="primary">Confirmer l’import</button></div></form>`;
  const form=pdfReview.querySelector('form');
  form.querySelector('button[type=button]').onclick=()=>pdfReview.close();

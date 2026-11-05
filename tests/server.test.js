@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {spawn} from 'node:child_process';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {MailService,readMailConfig} from '../mail-service.js';
@@ -119,6 +119,13 @@ test('real JavaScript PDF extraction and empty-document handling',async()=>{
   assert.match(text,/Example PDF/);
   await assert.rejects(()=>extractPdf(pdfFixture('')),/OCR/);
   await assert.rejects(()=>extractPdf(Buffer.from('not a PDF')),/PDF/);
+});
+
+test('legacy PDF endpoint keeps accepting real PDFs and tab-separated extracted table rows',async t=>{
+ const f=await fixture(t);
+ const response=await fetch(f.base+'/api/import-pdf',{method:'POST',headers:{'Content-Type':'application/pdf'},body:pdfFixture('Nom  Example PDF')});
+ assert.equal(response.status,201,await response.text());
+ assert.equal(importText(f.db,'Nom\tExample PDF').created,false);
 });
 
 test('Hostinger-style imported entry listens within three seconds with production auth', {timeout:6000}, async t=>{
@@ -424,8 +431,66 @@ async function previewPdf(f){
  return {status:response.status,data:await response.json()};
 }
 
+async function previewExactGme(f){
+ const response=await fetch(f.base+'/api/pdf-contacts/preview',{method:'POST',headers:{'Content-Type':'application/pdf'},body:readFileSync(new URL('./fixtures/Prospect_001_GME_France_FR.pdf',import.meta.url))});
+ return {status:response.status,data:await response.json()};
+}
+
+test('exact GME PDF maps company and manager separately, previews all data and reimports without duplicates',async t=>{
+ const f=await fixture(t);
+ const preview=await previewExactGme(f);
+ assert.equal(preview.status,200,JSON.stringify(preview.data));
+ assert.equal(f.db.prepare('SELECT count(*) n FROM companies').get().n,0);
+ assert.equal(preview.data.fields.find(row=>row.key==='general_email').target,'company');
+ assert.equal(preview.data.fields.find(row=>row.key==='display_name').target,'contact');
+ assert.ok(preview.data.missing.some(row=>row.key==='email'&&row.target==='contact'));
+ assert.ok(preview.data.supplementary.some(row=>row.label==='Forme juridique'));
+ assert.match(preview.data.opportunities.join('\n'),/Automatisation/);
+ const confirm=data=>f.request('/api/pdf-contacts/confirm',{token:data.token,choices:{}});
+ const saved=await confirm(preview.data);assert.equal(saved.status,200,JSON.stringify(saved.data));
+ const company=(await f.request('/api/companies/'+saved.data.company_id)).data;
+ assert.equal(company.general_email,'contact@gme-france.fr');assert.equal(company.general_phone,'06 58 85 70 63');
+ assert.equal(company.legal_name,'GAETAN MARCU ENTREPRISE – G.M.E.');assert.equal(company.siret,'98290288400013');
+ assert.equal(company.address,'1 Route de Maurion');assert.equal(company.postal_code,'47180');assert.equal(company.city,'Jusix');
+ assert.equal(company.contacts.length,1);assert.equal(company.contacts[0].display_name,'Gaëtan Marcu');assert.equal(company.contacts[0].job_title,'gérant');
+ assert.equal(company.contacts[0].email,'');assert.equal(company.contacts[0].phone,'');
+ assert.equal(company.company_status,'À vérifier');assert.equal(company.observed_needs,'');assert.equal(company.opportunity_score,null);
+ assert.equal(company.interactions.filter(row=>row.kind==='Hypothèses PDF à confirmer').length,1);
+ assert.match(company.interactions.find(row=>row.kind==='Hypothèses PDF à confirmer').detail,/non vérifiées/);
+ const counts=()=>['companies','contacts','prospects','interactions','contact_history'].map(table=>f.db.prepare('SELECT count(*) n FROM '+table).get().n);
+ const before=counts();
+ const again=await previewExactGme(f);assert.equal(again.status,200);assert.deepEqual(again.data.changes,[]);
+ assert.ok(again.data.fields.every(row=>row.unchanged));
+ const repeated=await confirm(again.data);assert.equal(repeated.status,200);assert.deepEqual(repeated.data,saved.data);assert.deepEqual(counts(),before);
+ assert.equal((await confirm(again.data)).status,409);
+ assert.equal(f.db.prepare('SELECT count(*) n FROM messages').get().n,0);
+ assert.equal(f.db.prepare('SELECT count(*) n FROM audits').get().n,0);
+});
+
+test('exact GME PDF merges missing fields, requires a choice for each conflict and preserves existing contact channels',async t=>{
+ const f=await fixture(t);
+ const company=(await f.request('/api/companies',{name:'GAETAN MARCU ENTREPRISE – G.M.E.',siren:'982902884',general_email:'accueil@example.fr'})).data.id;
+ const contact=(await f.request('/api/contacts',{company_id:company,display_name:'Gaëtan Marcu',job_title:'Direction',email:'gaetan@example.fr'})).data.id;
+ let preview=await previewExactGme(f);assert.equal(preview.status,200);
+ assert.deepEqual(preview.data.changes.filter(row=>row.conflict).map(row=>row.key).sort(),['general_email','job_title']);
+ assert.equal((await f.request('/api/pdf-contacts/confirm',{token:preview.data.token,choices:{general_email:'pdf'}})).status,400);
+ const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.data.token,choices:{general_email:'pdf',job_title:'crm'}});
+ assert.equal(saved.status,200);assert.equal(saved.data.contact_id,contact);assert.equal(saved.data.company_id,company);
+ const row=(await f.request('/api/contacts/'+contact)).data;
+ assert.equal(row.email,'gaetan@example.fr');assert.equal(row.job_title,'Direction');assert.equal(row.company.general_email,'contact@gme-france.fr');
+ assert.equal(f.db.prepare('SELECT count(*) n FROM contacts').get().n,1);
+});
+
+test('PDF preview rejects malformed contact data and an opposition on a general email before saving',async t=>{
+ const f=await fixture(t);
+ const company=(await f.request('/api/companies',{name:'Société opposée'})).data.id;
+ await f.request('/api/contacts',{company_id:company,email:'contact@gme-france.fr',email_opt_out:true});
+ assert.equal((await previewExactGme(f)).status,409);
+ assert.equal(f.db.prepare('SELECT count(*) n FROM companies').get().n,1);
+});
+
 test('structured PDF fills missing data, requires conflict decisions and rejects a stale preview',async t=>{
- const f=await fixture(t,{parsePdf:async()=> 'Entreprise : Société Exemple\nSite web : https://example.com\nDirigeant(e) : Camille Test\nEmail : new@example.com\nTéléphone : 0102030405\nOpportunité : AFFIRMATION PDF'});
+ const f=await fixture(t,{parsePdf:async()=> 'Entreprise : Société Exemple\nSite web : https://example.com\nDirigeant(e) : Camille Test\nEmail du contact : new@example.com\nTéléphone du contact : 0102030405\n3. Opportunités\nAFFIRMATION PDF'});
  const company=(await f.request('/api/companies',{name:'Société Exemple'})).data.id;
  const contact=(await f.request('/api/contacts',{company_id:company,display_name:'Camille Test',email:'old@example.com'})).data.id;
  const first=await previewPdf(f);
@@ -502,7 +567,7 @@ test('structured import reads a real PDF with labels above values and a bare web
  const preview=await response.json();
  assert.equal(response.status,200,JSON.stringify(preview));
  const fields=Object.fromEntries(preview.changes.map(field=>[field.key,field.value]));
- assert.deepEqual(fields,{name:'Atelier Exemple',website:'https://www.example.com',email:'contact@example.com',phone:'0102030405'});
+ assert.deepEqual(fields,{name:'Atelier Exemple',legal_name:'Atelier Exemple',website:'https://www.example.com',general_email:'contact@example.com',general_phone:'0102030405',email:'contact@example.com',phone:'0102030405'});
  const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.token,choices:{}});
  assert.equal(saved.status,200);
  assert.ok(saved.data.contact_id);
@@ -520,7 +585,7 @@ test('Omni Digital prospect report imports the identity table and ignores the au
  const fields=Object.fromEntries(preview.data.changes.map(field=>[field.key,field.value]));
  assert.deepEqual(fields,{name:'Agence Exemple',siren:'732829320',siret:'73282932000074',address:'10 rue Exemple',
   postal_code:'78000',city:'Versailles',industry:'Immobilier',display_name:'Camille Test',job_title:'Gérante',
-  website:'https://example.com',phone:'01 23 45 67 89'});
+  website:'https://example.com',general_phone:'01 23 45 67 89'});
  const saved=await f.request('/api/pdf-contacts/confirm',{token:preview.data.token,choices:{}});
  assert.equal(saved.status,200,JSON.stringify(saved.data));
  const contact=(await f.request('/api/contacts/'+saved.data.contact_id)).data;
