@@ -1,73 +1,12 @@
+import {parseProspectPdf,pdfFields,contactFields} from './pdf-prospect-parser.js';
 import {randomUUID} from 'node:crypto';
-import {EntityError,saveCompany,saveEntityContact,validateFrenchCompanyIds,restrictedIdentity} from './entities.js';
+import {EntityError,saveCompany,saveEntityContact,restrictedIdentity} from './entities.js';
 import {PolicyError,history,isOpposed,suppressed} from './contact-policy.js';
 
 const normalize=value=>String(value||'').normalize('NFKD').toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
 const emailKey=value=>String(value||'').trim().toLowerCase();
 const phoneKey=value=>String(value||'').replace(/\D/g,'').replace(/^33(?=\d{9}$)/,'0');
-const pdfFields={
-  name:['Raison sociale','Dénomination sociale','Nom de la société','Société','Entreprise','Nom de l’entreprise','Nom de l\'entreprise','Nom'],
-  siren:['SIREN'],siret:['SIRET'],website:['Site web','Site internet','Site'],address:['Adresse'],
-  postal_code:['Code postal'],city:['Ville','Commune'],industry:['Secteur / NAF','Secteur','Activité'],
-  display_name:['Dirigeant(e)','Dirigeant','Nom du contact','Contact'],job_title:['Fonction','Poste'],
-  email:['Email du contact','Adresse email','Adresse e-mail','Email','E-mail','Courriel'],phone:['Téléphone professionnel','Téléphone','Tél.','Tél'],mobile:['Mobile','Portable']
-};
-const knownLabels=new Set(Object.values(pdfFields).flat().map(label=>label.toLowerCase()));
-const contactFields=new Set(['display_name','job_title','email','phone','mobile']);
 const fail=(message,status=400)=>{throw new EntityError(message,status);};
-
-function extractFields(text){
-  const documentLines=text.split(/\r?\n/);
-  const identity=documentLines.findIndex(line=>/^Identité et coordonnées$/iu.test(line.trim()));
-  const end=identity<0?-1:documentLines.findIndex((line,index)=>index>identity&&
-    /^(?:Audit du site(?:\s|$)|Principaux problèmes|Premier contact(?:\s|$)|Relances?(?:\s|$))/iu.test(line.trim()));
-  const lines=identity<0?documentLines:documentLines.slice(identity+1,end<0?undefined:end);
-  const values={};
-  for(const [key,labels] of Object.entries(pdfFields)){
-    for(const label of labels){
-      const escaped=label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-      const rule=new RegExp('^\\s*'+escaped+'(?:[ \t]*:[ \t]*|[ \t]{2,})(.{1,499})$','iu');
-      const labelOnly=new RegExp('^\\s*'+escaped+'[ \t]*:?[ \t]*$','iu');
-      const matches=[...new Set(lines.map((line,index)=>{
-        const inline=line.match(rule)?.[1].trim();
-        if(inline)return inline;
-        if(!labelOnly.test(line))return '';
-        const next=lines[index+1]?.trim()||'';
-        const nextLabel=next.split(/:|[ \t]{2,}/,1)[0].trim().toLowerCase();
-        return next.length<=499&&!knownLabels.has(nextLabel)?next:'';
-      }).filter(value=>value&&!/^(?:[-–—]+|n\/?a|non renseigné|non trouv[ée]e?|non disponible|inconnu)$/i.test(value)))];
-      if(matches.length>1)fail('Plusieurs valeurs pour « '+label+' ». Utilisez un PDF pour une seule entreprise.');
-      if(matches.length){values[key]=matches[0];break;}
-    }
-  }
-  if(!values.name&&identity>=0){
-    values.name=documentLines.slice(0,identity)
-      .map(line=>line.match(/^\s*Prospect\s+\d+\s*[—–-]\s*(.{1,250})$/iu)?.[1].trim())
-      .find(Boolean);
-    if(!values.name)delete values.name;
-  }
-  const combined=lines.map(line=>line.match(/^\s*SIREN\s*\/\s*SIRET(?:\s*:\s*|\s{2,})([\d ]+)\s*\/\s*([\d ]+)\s*$/iu)).find(Boolean);
-  if(combined){
-    values.siren||=combined[1].trim();
-    values.siret||=combined[2].trim();
-  }
-  const location=values.address?.match(/^(.+),\s*(\d{5})\s+(.+)$/u);
-  if(location){
-    values.address=location[1].trim();
-    values.postal_code||=location[2];
-    values.city||=location[3].trim();
-  }
-  const manager=values.display_name?.match(/^(.+?)\s+[—–]\s+(.+)$/u);
-  if(manager){
-    values.display_name=manager[1].trim();
-    values.job_title||=manager[2].trim();
-  }
-  if(!values.name)fail('Entreprise non identifiée dans le PDF. Utilisez un champ « Entreprise », « Raison sociale » ou « Nom de la société » suivi de sa valeur.');
-  if(values.email)values.email=emailKey(values.email);
-  if(values.website&&/^(?:www\.)?[a-z\d][a-z\d.-]*\.[a-z]{2,}(?:[/?#]|$)/i.test(values.website))values.website='https://'+values.website;
-  validateFrenchCompanyIds(values);
-  return values;
-}
 
 function unique(rows,label){
   if(rows.length>1)fail('Plusieurs fiches possibles ('+label+'). Vérifiez les doublons avant de réimporter.',409);
@@ -89,8 +28,7 @@ function planImport(db,fields){
   if(company?.siren&&fields.siren&&company.siren!==fields.siren)fail('Le nom correspond à une entreprise portant un autre SIREN. Vérifiez l’identité avant l’import.',409);
   const contacts=company?db.prepare('SELECT * FROM contacts WHERE company_id=?').all(company.id):[];
   const identified=contacts.filter(row=>matchesContact(fields,row));
-  const contact=unique(identified,'contact')||
-    (contacts.length===1&&fields.display_name&&!contacts[0].display_name?contacts[0]:undefined);
+  const contact=unique(identified,'contact');
   const emailOwner=fields.email&&db.prepare('SELECT id FROM contacts WHERE lower(email)=?').get(fields.email);
   if(emailOwner&&emailOwner.id!==contact?.id)fail('Cet email appartient à un autre contact CRM. Vérifiez l’identité avant l’import.',409);
   const older=db.prepare('SELECT p.* FROM prospects p WHERE NOT EXISTS(SELECT 1 FROM contacts c WHERE c.prospect_id=p.id)').all();
@@ -101,7 +39,9 @@ function planImport(db,fields){
   if(legacy&&(contact||legacy.siren&&fields.siren&&legacy.siren!==fields.siren))fail('Identités en conflit avec un dossier historique. Vérifiez les fiches avant l’import.',409);
   if(company?.business_status==='Opposition'||contact?.contact_status==='Opposition'||legacy&&isOpposed(legacy)||
       suppressed(db,{company:fields.name,email:fields.email,phone:fields.phone,mobile:fields.mobile})||
-      restrictedIdentity(db,fields,contact?.id))throw new PolicyError('Une opposition est enregistrée pour cette fiche.',409);
+      restrictedIdentity(db,fields,contact?.id)||
+      suppressed(db,{company:fields.name,email:fields.general_email,phone:fields.general_phone})||
+      restrictedIdentity(db,{email:fields.general_email,phone:fields.general_phone},contact?.id))throw new PolicyError('Une opposition est enregistrée pour cette fiche.',409);
 
   const companyBase=company||legacy&&{name:legacy.company,website:legacy.website,siren:legacy.siren,address:legacy.address,
     postal_code:legacy.postal_code,city:legacy.city,country:legacy.country,industry:legacy.industry,priority:legacy.priority,
@@ -114,11 +54,12 @@ function planImport(db,fields){
       ['Décideur','Utilisateur'].includes(legacy.decision_role)?legacy.decision_role:'Inconnu',
     last_contact_at:legacy.last_contact_date,last_reply_at:legacy.last_response_date,next_followup_at:legacy.next_followup,
     email_opt_out:legacy.do_not_email==='Oui',phone_opt_out:legacy.do_not_call==='Oui'};
-  const changes=Object.entries(fields).map(([key,value])=>{
+  const rows=Object.entries(fields).map(([key,value])=>{
     const current=(contactFields.has(key)?contactBase:companyBase)?.[key]||'';
-    return {key,label:pdfFields[key][0],value,current,conflict:!!current&&current!==value};
-  }).filter(field=>field.current!==field.value);
-  return {company,contact,legacy,companyBase,contactBase,changes};
+    return {key,label:pdfFields[key][0],target:contactFields.has(key)?'contact':'company',value,current,conflict:!!current&&current!==value,unchanged:current===value};
+  });
+  const changes=rows.filter(field=>!field.unchanged);
+  return {company,contact,legacy,companyBase,contactBase,rows,changes};
 }
 
 function applyImport(db,plan,choices){
@@ -153,14 +94,18 @@ export function isPdfContact(db,id){
 export function mountPdfContacts(app,db,parsePdf,transaction){
   const previews=new Map();
   app.post('/api/pdf-contacts/preview',async(req,res)=>{
-    const fields=extractFields(await parsePdf(req.body));
+    const document=parseProspectPdf(await parsePdf(req.body));
+    const {fields}=document;
     const plan=planImport(db,fields);
     const now=Date.now();
     for(const [id,entry] of previews)if(entry.expires<=now)previews.delete(id);
     if(previews.size>=20)fail('Trop d’imports en attente. Validez une fiche ou réessayez plus tard.',429);
     const token=randomUUID();
-    previews.set(token,{fields,plan:JSON.stringify(plan),expires:now+15*60*1000});
-    res.json({token,changes:plan.changes,company:plan.company?.name||plan.legacy?.company||fields.name});
+    previews.set(token,{document,fields,plan:JSON.stringify(plan),expires:now+15*60*1000});
+    res.json({token,changes:plan.changes,fields:plan.rows,company:plan.company?.name||plan.legacy?.company||fields.name,
+      company_id:plan.company?.id||null,contact_id:plan.contact?.id||null,
+      supplementary:document.supplementary,opportunities:document.opportunities,warnings:document.warnings,
+      missing:['name','siren','siret','address','postal_code','city','website','general_email','general_phone','display_name','job_title','email','phone'].filter(key=>!fields[key]).map(key=>({key,label:pdfFields[key][0],target:contactFields.has(key)?'contact':'company'}))});
   });
   app.post('/api/pdf-contacts/confirm',(req,res)=>{
     const token=req.body?.token;
@@ -169,7 +114,17 @@ export function mountPdfContacts(app,db,parsePdf,transaction){
     const result=transaction(db,()=>{
       const plan=planImport(db,entry.fields);
       if(JSON.stringify(plan)!==entry.plan)fail('Une fiche a changé depuis l’aperçu. Rechargez le PDF.',409);
-      return applyImport(db,plan,req.body.choices);
+      const result=applyImport(db,plan,req.body.choices);
+      const documents=[
+        ['Informations PDF à vérifier',entry.document.supplementary.map(item=>item.label+' : '+item.value).join('\n')],
+        ['Hypothèses PDF à confirmer','Opportunités potentielles, non vérifiées. Aucun besoin, score ni intention d’achat établi.\n'+entry.document.opportunities.join('\n')]
+      ];
+      for(const [kind,detail]of documents){
+        if(kind==='Hypothèses PDF à confirmer'&&!entry.document.opportunities.length||!detail)continue;
+        if(!db.prepare('SELECT 1 FROM interactions WHERE company_id=? AND kind=? AND detail=?').get(result.company_id,kind,detail))
+          db.prepare('INSERT INTO interactions VALUES(?,?,?,?,?,?)').run(randomUUID(),result.company_id,null,kind,detail,new Date().toISOString());
+      }
+      return result;
     });
     previews.delete(token);
     res.json(result);

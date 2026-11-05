@@ -1,5 +1,6 @@
 import {readOutreachConfig,transformationEmail} from './transformation.js';
 import {mountPdfContacts,isPdfContact} from './pdf-contacts.js';
+import {pdfPageText} from './pdf-layout.js';
 import {guidedDraft} from './guided-outreach.js';
 import {initDiscovery, DiscoveryService, mountDiscovery, DiscoveryError} from './prospect-discovery.js';
 import {initQualification,QualificationService,mountQualification,readQualificationConfig,QualificationError} from './qualification.js';
@@ -151,16 +152,7 @@ export async function extractPdf(buffer) {
     for (let i=1;i<=pdf.numPages && text.length<100000;i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      // Keep PDF columns separated for the OmniDigital field extractor.
-      let lineY = null;
-      for (const item of content.items) {
-        if (!('str' in item)) continue;
-        const y = Math.round(item.transform[5]);
-        if (lineY!==null && Math.abs(y-lineY)>3) text+='\n';
-        text+=item.str+'  '; lineY=y;
-        if (item.hasEOL) { text+='\n'; lineY=null; }
-      }
-      text+='\n'; page.cleanup();
+      text+=pdfPageText(content.items)+'\n\f\n';page.cleanup();
     }
   } catch (e) {
     if (e instanceof InputError) throw e;
@@ -172,7 +164,8 @@ export async function extractPdf(buffer) {
 }
 function reportField(text,label) {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  return text.match(new RegExp('^\\s*'+escaped+'\\s{2,}([^\\n]+)','m'))?.[1]?.trim() || '';
+  // pdfjs may normalize spaces inside a single text item to one space.
+  return text.match(new RegExp('^[ \\t]*'+escaped+'[ \\t]+([^\\n]+)','m'))?.[1]?.trim() || '';
 }
 export function importText(db,text) {
   const company=reportField(text,'Nom'),email=reportField(text,'Email'),website=reportField(text,'Site web');
