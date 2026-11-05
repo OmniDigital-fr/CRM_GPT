@@ -33,7 +33,7 @@ test('PDF exports contain real multi-page technical and commercial reports and r
  assert.match(text,/Détails et mesures/);
  assert.doesNotMatch(text,/Rendu et navigation mobile \[Non vérifié\]/);
 }else{
- for(const heading of ["Présentation de l'entreprise",'Présence et outils numériques','Opportunités de digitalisation','Intelligence artificielle','Recommandations et prochaines étapes'])assert.ok(text.includes(heading));
+ for(const heading of ["L'essentiel",'Les notes Google PageSpeed','Les priorités à vérifier','Analyse et limites','Prochaine action'])assert.ok(text.includes(heading));
  assert.ok(a.diagnostic);
  assert.equal(a.diagnostic.ai.opportunities.length,0);
 }await task.destroy()}const secure=await fixture(t,{auth:true});assert.equal((await secure.request('/api/digital-audits?company_id='+secure.cid)).status,401);assert.equal((await secure.request('/api/digital-audits',{company_id:secure.cid},{...secure.auth,Origin:'https://evil.example'})).status,403);const r=await run(secure);assert.equal((await fetch(secure.base+`/api/digital-audits/${r.id}/report.pdf`)).status,401);});
