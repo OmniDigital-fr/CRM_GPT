@@ -313,7 +313,10 @@ test('SMTP requires individual current approval; sends only the frozen recipient
  assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id})).status,409);assert.equal(fake.sent.length,0);
  assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at})).status,200);
  assert.equal(fake.sent.length,1);assert.deepEqual(fake.sent[0].envelope.to,['recipient@example.com']);
- assert.equal(fake.sent[0].from.address,'contact@omnidigital.fr');assert.equal(fake.sent[0].html,undefined);
+ assert.equal(fake.sent[0].from.address,'contact@omnidigital.fr');
+ assert.match(fake.sent[0].html,/cid:omni-digital-signature@crm2.omnidigital.fr/);
+ assert.equal(fake.sent[0].attachments.length,1);
+ assert.match(fake.sent[0].text,/Paulo Da Costa/);
  assert.equal((await request(`/api/messages/${m.id}/send`,{confirm:m.id,approvedAt:m.approved_at})).status,409);
  assert.equal(fake.sent.length,1);
  const state=(await request('/api/state')).data;assert.equal(state.messages[0].status,'Envoyé');assert.equal(state.metrics.sent,1);
