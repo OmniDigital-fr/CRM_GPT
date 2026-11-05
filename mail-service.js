@@ -10,7 +10,13 @@ const MAILBOX=/^[^\s@<>,;:]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 const SERVERS={hostinger:{smtp:'smtp.hostinger.com',imap:'imap.hostinger.com'},titan:{smtp:'smtp.titan.email',imap:'imap.titan.email'}};
 export function readMailConfig(env=process.env){
  const provider=String(env.MAIL_PROVIDER||'hostinger').toLowerCase(),user=env.MAIL_USER||'',password=env.MAIL_PASSWORD||'';
- return {provider,user,password,name:env.MAIL_FROM_NAME||'OmniDigital',...SERVERS[provider],configured:!!SERVERS[provider]&&!!password&&MAILBOX.test(user),intervalMs:60000};
+ return {provider,user,password,signatureHtml:env.MAIL_SIGNATURE_HTML||'',name:env.MAIL_FROM_NAME||'OmniDigital',...SERVERS[provider],configured:!!SERVERS[provider]&&!!password&&MAILBOX.test(user),intervalMs:60000};
+}
+export function outgoingHtml(body,signature){
+ if(!signature)return undefined;
+ const content=body.replace(/\n\nOmniDigital\nhttps:\/\/omnidigital\.fr(?=\n\n)/g,'');
+ const escaped=content.replace(/[&<>"]/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[character]));
+ return '<div>'+escaped.replace(/\n/g,'<br>')+'</div>'+signature;
 }
 function atomic(db,fn){db.exec('BEGIN IMMEDIATE');try{const value=fn();db.exec('COMMIT');return value}catch(e){db.exec('ROLLBACK');throw e}}
 function stamp(){return new Date().toISOString()}
@@ -126,7 +132,7 @@ export class MailService{
    return {...m,smtpId,attemptedAt,previousId:previous?.smtp_message_id||''};
   });
   try{
-   const result=await this.transport.sendMail({from:{name:this.config.name,address:this.config.user},to:{address:claimed.approved_recipient},envelope:{from:this.config.user,to:[claimed.approved_recipient]},replyTo:this.config.user,subject:claimed.subject,text:claimed.body,messageId:claimed.smtpId,...(claimed.previousId?{inReplyTo:claimed.previousId,references:[claimed.previousId]}:{}),headers:{'Auto-Submitted':'no'},disableFileAccess:true,disableUrlAccess:true});
+   const result=await this.transport.sendMail({from:{name:this.config.name,address:this.config.user},to:{address:claimed.approved_recipient},envelope:{from:this.config.user,to:[claimed.approved_recipient]},replyTo:this.config.user,subject:claimed.subject,text:claimed.body,...(this.config.signatureHtml?{html:outgoingHtml(claimed.body,this.config.signatureHtml)}:{}),messageId:claimed.smtpId,...(claimed.previousId?{inReplyTo:claimed.previousId,references:[claimed.previousId]}:{}),headers:{'Auto-Submitted':'no'},disableFileAccess:true,disableUrlAccess:true});
    if(!result.accepted?.length)throw new Error('Recipient not accepted');
    atomic(this.db,()=>this.markSent(claimed,'Accepté par le serveur SMTP ; cela ne garantit pas la livraison en boîte de réception.'));
    return {ok:true,note:'Email accepté par le serveur SMTP.'};

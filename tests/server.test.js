@@ -39,7 +39,7 @@ test('contact CRUD preserves profile, report and status; duplicates blocked; del
   assert.equal((await request(`/api/prospects/${id}/update`,{...input,phone:'0123456789'})).status,200);
   let p=(await request('/api/state')).data.prospects[0];assert.equal(p.pdf_text,'Rapport conservé');assert.equal(p.status,'Qualifié');assert.equal(p.address2,'Lieu-dit Les Chênes');
   await request(`/api/prospects/${id}/draft`,{});
-  let state=(await request('/api/state')).data;assert.match(state.messages[0].body,/SEO local/);assert.equal(state.metrics.sent,0);
+  let state=(await request('/api/state')).data;assert.match(state.messages[0].body,/transformation numérique/);assert.doesNotMatch(state.messages[0].body,/SEO local/);assert.equal(state.metrics.sent,0);
   db.prepare('INSERT INTO events VALUES(?,?,?,?)').run('e',state.messages[0].id,'open',new Date().toISOString());
   await request(`/api/prospects/${id}/status`,{status:'Opposition'});
   assert.equal((await request(`/api/prospects/${id}/draft`,{})).status,400);
@@ -160,7 +160,7 @@ test('audit history persists without Google key, feeds drafts and is deleted wit
   assert.match(history[0].checks.find(c=>c.key==='response').detail,/pas le chargement complet/);
   assert.ok(history[0].arguments.length>0);
   await request(`/api/prospects/${id}/draft`,{});
-  assert.match((await request('/api/state')).data.messages[0].body,/Balisage local/);
+  assert.match((await request('/api/state')).data.messages[0].body,/diagnostic de 20 minutes/);
   await request(`/api/prospects/${id}/delete`,{confirm:id});
   assert.equal(db.prepare('SELECT COUNT(*) n FROM site_audits').get().n,0);
 });
@@ -522,4 +522,20 @@ test('Omni Digital prospect report imports the identity table and ignores the au
  assert.equal(saved.status,200,JSON.stringify(saved.data));
  const contact=(await f.request('/api/contacts/'+saved.data.contact_id)).data;
  assert.equal(contact.email,'');
+});
+
+test('a company without a website can prepare a reviewed transformation sequence and followups use edited history',async t=>{
+ const f=await fixture(t);
+ const company=(await f.request('/api/companies',{name:'Test B2B',industry:'Services aux entreprises'})).data.id;
+ const contact=(await f.request('/api/contacts',{company_id:company,email:'test@example.com'})).data;
+ assert.equal((await f.request('/api/prospects/'+contact.prospect_id+'/guided-sequence',{})).status,201);
+ const messages=f.db.prepare('SELECT * FROM messages ORDER BY sequence_stage').all();
+ assert.equal(messages.length,4);
+ assert.match(messages[0].body,/diagnostic de 20 minutes/);
+ assert.doesNotMatch(messages[0].body,/problème|refonte|manuel/);
+ await f.request('/api/messages/'+messages[0].id+'/update',{subject:messages[0].subject,body:'Texte initial revu par la personne responsable.'});
+ assert.equal((await f.request('/api/messages/'+messages[1].id+'/approve',{confirm:messages[1].id})).status,200);
+ const followup=f.db.prepare('SELECT * FROM messages WHERE id=?').get(messages[1].id);
+ assert.match(followup.internal_context,/Texte initial revu/);
+ assert.equal(followup.sent_at,'');
 });

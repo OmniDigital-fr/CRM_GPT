@@ -1,3 +1,4 @@
+import {readOutreachConfig,transformationEmail} from './transformation.js';
 import {mountPdfContacts,isPdfContact} from './pdf-contacts.js';
 import {guidedDraft} from './guided-outreach.js';
 import {initDiscovery, DiscoveryService, mountDiscovery, DiscoveryError} from './prospect-discovery.js';
@@ -134,32 +135,9 @@ function duplicateGroups(prospects) {
   }
   return [...groups.values()].filter(g=>g.ids.length>1);
 }
-function draft(p) {
-  const latestAudit=JSON.parse(p.audit || '{}');
-  const scores = latestAudit.scores || {}, findings = [];
-  if ((scores.performance ?? 100)<70) findings.push('la vitesse de chargement de votre site');
-  if ((scores.seo ?? 100)<80) findings.push('la visibilité technique de votre site sur les moteurs de recherche');
-  if ((scores.accessibility ?? 100)<80) findings.push('l’accessibilité de votre parcours en ligne');
-  const evidence = [p.needs,p.services,p.response_scenario,p.response_details,p.objection,...(latestAudit.conclusions || []),p.notes,(p.pdf_text || '').slice(0,6000)].filter(Boolean).join('\n');
-  let body = `Bonjour,\n\nJe vous contacte au nom d’OmniDigital au sujet de ${p.company}. Nous accompagnons les entreprises dans la création de sites web et leur marketing digital.\n\n`;
-  if(p.response_details)body=`Bonjour${p.contact_name?' '+p.contact_name:''},\n\nMerci pour votre retour au sujet de ${p.company}.\n\n`;
-  body += findings.length ? `Une analyse automatisée de votre site suggère des pistes concernant ${findings.join(', ')}. Ces résultats méritent une vérification avec votre contexte métier.\n\n` : 'Nous souhaitons échanger avec vous sur les possibilités d’amélioration de votre présence en ligne, en fonction de vos priorités.\n\n';
-  const points=(latestAudit.arguments||[]).slice(0,2).map(a=>a.title+' : '+a.argument);
-  if(points.length)body+='Pistes à étudier ensemble :\n'+points.map(x=>'• '+x).join('\n')+'\n\n';
-  else if(p.needs)body+='Nous pouvons échanger sur les besoins à confirmer suivants : '+p.needs.slice(0,500)+'.\n\n';
-  const nextSteps={
-    'Réponse positive':'Merci pour votre retour. Définissons ensemble un créneau pour examiner vos priorités.',
-    'Demande d’informations':'Nous pouvons préciser les actions utiles à votre activité après un court diagnostic de vos besoins.',
-    'Demande de rendez-vous':'Merci pour votre demande de rendez-vous. Quel créneau vous conviendrait pour notre échange ?',
-    'Demande de devis / tarifs':'Pour établir une proposition précise, clarifions d’abord le périmètre et vos priorités. Aucun tarif ne sera avancé sans ces éléments.',
-    'Pas maintenant / rappeler plus tard':p.next_followup?'Comme convenu, nous pourrons reprendre contact à partir du '+p.next_followup+'.':'Indiquez-nous si vous souhaitez reprendre cet échange ultérieurement, et à quelle date.',
-    'Pas de budget':'Nous pouvons commencer par identifier vos priorités, puis reprendre le projet lorsque votre budget le permettra, si vous le souhaitez.',
-    'Déjà un prestataire':'Si vous le souhaitez, nous pouvons vous transmettre un avis complémentaire à discuter avec votre prestataire actuel.',
-    'Mauvais interlocuteur':'Pourriez-vous nous indiquer l’interlocuteur approprié pour cette demande, si vous souhaitez nous orienter ?',
-    'Projet reporté':'Nous prenons note du report du projet. Nous pourrons reprendre la discussion à votre demande.'
-  };
-  body += (nextSteps[p.response_scenario] || 'Seriez-vous disponible pour un échange de 15 minutes afin d’identifier les actions les plus utiles pour votre activité ?')+'\n\nOmniDigital\nhttps://omnidigital.fr\n\nSi vous ne souhaitez plus être contacté, répondez simplement « stop ».';
-  return {subject:`${p.company} — pistes pour votre présence digitale`, body,context:evidence};
+function draft(p,config={}) {
+ const context=[p.response_scenario,p.response_details,p.objection,p.notes].filter(Boolean).join('\n');
+ return transformationEmail(p,{config,context,reply:!!p.response_details});
 }
 
 export async function extractPdf(buffer) {
@@ -210,7 +188,11 @@ export function importText(db,text) {
 const digest = value => createHash('sha256').update(value).digest();
 export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=inspectWebsite,mailService,digitalService,qualificationService}) {
   const app=express();app.disable('x-powered-by');
-  const mail=mailService||new MailService({db,config:config.mail||readMailConfig({}),draft});
+  const mailConfig=config.mail||readMailConfig({});
+  const outreachConfig={...(config.outreach||readOutreachConfig()),signatureProvided:!!mailConfig.signatureHtml};
+  const compose=prospect=>draft(prospect,outreachConfig);
+  const guidedCompose=prospect=>guidedDraft(db,prospect,outreachConfig);
+  const mail=mailService||new MailService({db,config:mailConfig,draft:compose});
   app.locals.mail=mail;
   const digital=digitalService||new DigitalAuditService({db,config,inspect,fetcher});
   app.locals.digitalAudit=digital;
@@ -277,10 +259,10 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
     const pdfContact=isPdfContact(db,id);
     if(action==='sequence'||action==='guided-sequence'){
       const audited=pdfContact||action==='guided-sequence';
-      const sequenceId=transaction(db,()=>createSequence(db,p,audited?prospect=>guidedDraft(db,prospect):draft,{audited}));return res.status(201).json({sequenceId});
+      const sequenceId=transaction(db,()=>createSequence(db,p,audited?guidedCompose:compose));return res.status(201).json({sequenceId});
     }
     if(action==='reply'){
-      const result=transaction(db,()=>registerReply(db,p,req.body?.body,req.body?.scenario,draft));return res.status(201).json(result);
+      const result=transaction(db,()=>registerReply(db,p,req.body?.body,req.body?.scenario,compose));return res.status(201).json(result);
     }
     if (action==='pdf') {
       const text=await parsePdf(req.body);
@@ -311,7 +293,7 @@ export function createApp({db,config,fetcher=fetch,parsePdf=extractPdf,inspect=i
       } else if (action==='draft'||action==='guided-draft') {
         const audited=pdfContact||action==='guided-draft';
         if(!audited)assertDraftAllowed(db,p);
-        const {subject,body,context}=audited?guidedDraft(db,p):draft(p);
+        const {subject,body,context}=audited?guidedCompose(p):compose(p);
         db.prepare('INSERT INTO messages(id,prospect_id,subject,body,created,internal_context) VALUES(?,?,?,?,?,?)').run(randomUUID().replaceAll('-',''),id,subject,body,now(),context);
       } else if(action==='reconsent'){
         if(req.body?.confirm!==id)throw new PolicyError('Confirmation du nouvel accord requise.');

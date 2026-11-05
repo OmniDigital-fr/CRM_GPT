@@ -1,3 +1,4 @@
+import {buildTransformationDiagnostic,DIAGNOSTIC_TITLE} from './transformation.js';
 import {fileURLToPath} from 'node:url';
 import PDFDocument from 'pdfkit';
 const text=v=>String(v??'').normalize('NFC').replace(/[–—‑]/g,'-').replace(/[“”]/g,'"').replace(/[‘’]/g,"'").replace(/[^\x20-\x7e\u00a0-\u00ffŒœ€\n]/gu,'?');
@@ -29,37 +30,46 @@ export function auditOverview(result){
  };
 }
 export function digitalAuditPdf(audit,company,{audience='commercial'}={}){
- return new Promise((resolve,reject)=>{const doc=new PDFDocument({size:'A4',margin:46,bufferPages:true,info:{Title:audience==='technical'?'Rapport technique interne - Omni Digital':'Synthèse commerciale - Omni Digital',Author:'Omni Digital',Subject:'Audit digital indicatif'}});doc.registerFont('AuditSans',fileURLToPath(new URL('./assets/AuditSans.ttf',import.meta.url)));doc.registerFont('AuditSans-Bold',fileURLToPath(new URL('./assets/AuditSans-Bold.ttf',import.meta.url)));const chunks=[];doc.on('data',c=>chunks.push(c));doc.on('error',reject);doc.on('end',()=>resolve(Buffer.concat(chunks)));
+ return new Promise((resolve,reject)=>{const doc=new PDFDocument({size:'A4',margin:46,bufferPages:true,info:{Title:audience==='technical'?'Rapport technique interne - Omni Digital':DIAGNOSTIC_TITLE+' - Omni Digital',Author:'Omni Digital',Subject:'Audit digital indicatif'}});doc.registerFont('AuditSans',fileURLToPath(new URL('./assets/AuditSans.ttf',import.meta.url)));doc.registerFont('AuditSans-Bold',fileURLToPath(new URL('./assets/AuditSans-Bold.ttf',import.meta.url)));const chunks=[];doc.on('data',c=>chunks.push(c));doc.on('error',reject);doc.on('end',()=>resolve(Buffer.concat(chunks)));
  const width=doc.page.width-92;const ensure=n=>{if(doc.y+n>doc.page.height-65)doc.addPage()};const title=value=>{ensure(70);doc.moveDown(.7).font('AuditSans-Bold').fontSize(14).fillColor('#163047').text(text(value),{width});doc.moveDown(.4)};const p=(value,{small=false,color='#34445a'}={})=>{ensure(30);doc.font('AuditSans').fontSize(small?8.5:9.5).fillColor(color).text(text(value),{width,lineGap:2});doc.moveDown(.45)};const item=(heading,body)=>{ensure(75);doc.font('AuditSans-Bold').fontSize(10).fillColor('#20334a').text(text(heading),{width});doc.moveDown(.2);p(body)};
- const r=audit.result||{};doc.rect(0,0,doc.page.width,116).fill('#142238');doc.font('AuditSans-Bold').fontSize(21).fillColor('#ffffff').text('OMNI DIGITAL',46,35,{width});doc.font('AuditSans').fontSize(11).fillColor('#cae0ea').text(audience==='technical'?'RAPPORT TECHNIQUE INTERNE':'SYNTHESE COMMERCIALE',46,69,{width});doc.y=139;
+ const r=audit.result||{};doc.rect(0,0,doc.page.width,116).fill('#142238');doc.font('AuditSans-Bold').fontSize(21).fillColor('#ffffff').text('OMNI DIGITAL',46,35,{width});doc.font('AuditSans').fontSize(11).fillColor('#cae0ea').text(audience==='technical'?'RAPPORT TECHNIQUE INTERNE':'DIAGNOSTIC DE TRANSFORMATION NUMERIQUE',46,69,{width});doc.y=139;
  if(audience==='commercial'){
-  const overview=auditOverview(r);
-  doc.font('AuditSans-Bold').fontSize(20).fillColor('#163047').text(text(company.name||'Entreprise'),{width});
-  p(r.url||r.requestedUrl||audit.requested_url||'Adresse non disponible',{small:true});
-  const stamp=audit.created_at||r.date;
-  const day=Number.isFinite(Date.parse(stamp))?new Intl.DateTimeFormat('fr-FR',{timeZone:'Europe/Paris'}).format(new Date(stamp)):'Date inconnue';
-  p(day+' | '+overview.status+' | '+overview.coverage,{small:true});
-  title('Priorités à vérifier');
-  if(!overview.priorities.length)p('Aucune piste suffisamment documentée dans les contrôles disponibles.');
-  for(const [index,x] of overview.priorities.entries()){
-   const lines=[['Constat',x.observation],['Action proposée',x.action],['Effet possible',x.impact]].filter(([,value])=>value);
-   doc.font('AuditSans').fontSize(9.5);
-   const height=lines.reduce((sum,[label,value])=>sum+doc.heightOfString(text(label+' : '+value),{width,lineGap:2})+6,40);
-   ensure(height);
-   doc.font('AuditSans-Bold').fontSize(11).fillColor('#163047').text(text((index+1)+'. '+x.topic+' | Priorité '+(x.priority||'à confirmer').toLowerCase()),{width});
-   doc.moveDown(.3);
-   for(const [label,value] of lines)p(label+' : '+value);
+  const d=audit.diagnostic||buildTransformationDiagnostic({company,audit:{id:audit.id,created_at:audit.created_at||r.date,result:r}});
+  title('1. Présentation de l’entreprise');
+  p(d.company.name+' | '+d.company.activity);
+  p(d.company.size+' | '+d.company.location);
+  p(d.company.source+' | '+d.company.status+' | '+(d.company.date||'Date à confirmer'),{small:true});
+  title('2. Présence et outils numériques');
+  p(d.presence.status);
+  p(d.presence.tools);
+  for(const o of d.presence.observations.slice(0,3)){
+   item(o.text,o.evidence);
+   p(o.classification+' | '+o.source+' | '+o.date+' | '+o.url,{small:true});
   }
-  title('Prochaine étape');
-  p(overview.next);
-  if(overview.positives.length){
-   title('Points positifs observés');
-   for(const value of overview.positives)p('- '+value);
+  if(!d.presence.observations.length)p('Aucun problème web récent et attribuable au site n’est établi dans ce périmètre.');
+  title('3. Opportunités de digitalisation');
+  for(const o of d.opportunities.filter(item=>item.code!=='ia')){
+   item(o.domain+' | '+o.classification,o.justification);
+   p('Solution envisageable : '+o.solution);
+   p('Question : '+o.questions.join(' '));
+   p('Source : '+o.source+' | '+(o.date||'Date à confirmer')+' | Confiance : '+o.confidence,{small:true});
   }
-  title('Périmètre et limites');
-  p('Tests automatisés sur un échantillon de pages. Les effets proposés restent à confirmer. Aucun formulaire n’a été soumis.');
-  p('Vitesse (Lighthouse) : '+overview.speed.map(({device,score})=>(device==='mobile'?'mobile':'ordinateur')+' '+(score===null?'non mesurée':score+'/100')).join(' | ')+'.',{small:true});
-  if(overview.limits.length)p('Contrôles incomplets : '+(r.errors||[]).map(error=>error.scope).join(', ')+'. Voir le rapport technique pour le détail.',{small:true});
+  ensure(220+d.ai.opportunities.length*120);
+  title('4. Intelligence artificielle');
+  p(d.ai.message);
+  for(const o of d.ai.opportunities){
+   item(o.classification,o.justification);
+   p(o.solution);
+   p('Source : '+o.source+' | '+o.date+' | Confiance : '+o.confidence,{small:true});
+  }
+  for(const question of d.ai.questions)p('- '+question);
+  title('5. Recommandations et prochaines étapes');
+  p(d.next);
+  p('Services sur besoin documenté : '+(d.recommendations.map(item=>item.domain).join(', ')||'Aucun service confirmé.'));
+  p(d.project+'. '+d.recurring);
+  for(const question of d.questions)p('- '+question);
+  p('Points à confirmer : '+d.missing.join(', ')+'.',{small:true});
+  p('Les constats web portent sur les pages contrôlées. Les opportunités restent à confirmer avec l’entreprise.',{small:true});
  }else{
   p(company.name||'Entreprise');p('Site demandé : '+(r.requestedUrl||audit.requested_url||'—'),{small:true});p('Page finale : '+(r.url||'Non disponible'),{small:true});p('Audit : '+audit.id+' | Exécution : '+(audit.created_at||r.date||'')+' | État : '+(audit.state||r.execution_status||''),{small:true});
   p('Périmètre : '+(r.pages?.length||0)+' page(s) HTML analysée(s), jusqu’à trois pages et seize requêtes HTTP. Aucun JavaScript du site exécuté sur le serveur CRM.');
